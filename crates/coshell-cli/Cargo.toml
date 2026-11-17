@@ -1,0 +1,15 @@
+[package]
+name = "coshell-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "coshell"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+coshell-core = { path = "../coshell-core" }
+serde_json.workspace = true

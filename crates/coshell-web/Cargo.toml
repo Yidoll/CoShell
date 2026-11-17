@@ -1,0 +1,15 @@
+[package]
+name = "coshell-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+coshell-core = { path = "../coshell-core" }
+coshell-types = { path = "../coshell-types" }
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

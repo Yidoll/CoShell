@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+  "src-tauri",
+  "crates/coshell-types",
+  "crates/coshell-platform",
+  "crates/coshell-storage",
+  "crates/coshell-shell",
+  "crates/coshell-backup",
+  "crates/coshell-sql",
+  "crates/coshell-formats",
+  "crates/coshell-ai-provider",
+  "crates/coshell-plugin-runtime",
+  "crates/coshell-drivers",
+  "crates/coshell-core",
+  "crates/coshell-web",
+  "crates/coshell-cli",
+  "crates/coshell-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/Yidoll/CoShell"
+
+[workspace.dependencies]
+argon2 = "=0.5.3"
+axum = "0.8"
+chacha20poly1305 = "=0.10.1"
+clap = { version = "4.5", features = ["derive"] }
+fs2 = "=0.4.3"
+getrandom = "=0.2.17"
+keyring = { version = "=3.6.3", default-features = false }
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls"] }
+rusqlite = { version = "=0.37.0", features = ["bundled", "backup"] }
+russh = { version = "=0.63.1", default-features = false, features = ["ring", "rsa"] }
+secrecy = "=0.10.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "=0.10.9"
+tauri = { version = "2", features = [] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "io-std", "io-util", "sync", "time"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zeroize = "=1.9.1"
+
+[profile.release]
+panic = "abort"
+strip = true
+lto = true
+codegen-units = 1

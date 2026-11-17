@@ -1,0 +1,27 @@
+{
+  "name": "coshell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @coshell/desktop dev",
+    "dev:web": "pnpm --filter @coshell/desktop dev",
+    "dev:backend": "cargo run -p coshell-web",
+    "dev:tauri": "tauri dev",
+    "build": "pnpm --filter @coshell/desktop build",
+    "typecheck": "pnpm --filter @coshell/desktop typecheck",
+    "test": "pnpm --filter @coshell/desktop test",
+    "architecture": "node --test scripts/check-architecture.mjs",
+    "spec:validate": "openspec validate --all --strict --no-interactive",
+    "check": "pnpm spec:validate && pnpm architecture && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "packageManager": "pnpm@10.34.7",
+  "devDependencies": {
+    "@fission-ai/openspec": "1.17.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "smol-toml": "1.9.1"
+  }
+}

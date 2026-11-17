@@ -1,0 +1,15 @@
+[package]
+name = "coshell-drivers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+coshell-platform = { path = "../coshell-platform" }
+coshell-sql = { path = "../coshell-sql" }
+coshell-types = { path = "../coshell-types" }
+russh.workspace = true
+secrecy.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

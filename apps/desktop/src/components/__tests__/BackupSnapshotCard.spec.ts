@@ -1,0 +1,10 @@
+import { mount } from '@vue/test-utils';
+import { describe, expect, it } from 'vitest';
+import BackupSnapshotCard from '../BackupSnapshotCard.vue';
+import type { DavSnapshot } from '@/lib/backend/types';
+const snapshot = (patch: Partial<DavSnapshot> = {}): DavSnapshot => ({ id:'s1',directory:'20261116031818',name:'CoShell 备份',createdAt:'2026-11-16T03:18:18Z',appVersion:'0.1.0',formatVersion:1,sizeBytes:1024,protection:'none',containsCredentials:false,state:'structurally_complete',reason:null,restorable:true,source:'independent',...patch });
+describe('备份卡片', () => {
+  it('未知版本和大小不伪装为0，并禁用异常快照恢复', () => { const w=mount(BackupSnapshotCard,{props:{snapshot:snapshot({appVersion:null,formatVersion:null,sizeBytes:null,state:'missing_manifest',reason:'manifest 缺失',restorable:false})}}); expect(w.text()).toContain('应用版本未知'); expect(w.text()).toContain('大小未知'); expect(w.text()).not.toContain('0 bytes'); expect(w.get('button').attributes('disabled')).toBeDefined(); expect(w.text()).toContain('manifest 缺失'); });
+  it('声明不含凭据与缺失凭据包分别展示，结构检查不宣称完整认证', async () => { const w=mount(BackupSnapshotCard,{props:{snapshot:snapshot()}});expect(w.text()).toContain('不含已保存凭据');expect(w.text()).toContain('结构完整，待完整校验');await w.get('button').trigger('click');expect(w.emitted('restore')?.[0]).toEqual(['s1']);await w.setProps({snapshot:snapshot({state:'missing_credentials',containsCredentials:true,restorable:false})});expect(w.text()).toContain('缺少凭据包');expect(w.get('button').attributes('disabled')).toBeDefined(); });
+  it('旧格式或缺清单的推算时间明确标识，正常清单时间不标推算',async()=>{const w=mount(BackupSnapshotCard,{props:{snapshot:snapshot({source:'legacy',state:'legacy',appVersion:null})}});expect(w.text()).toContain('目录时间（推算）');await w.setProps({snapshot:snapshot({state:'missing_manifest',appVersion:null,restorable:false})});expect(w.text()).toContain('目录时间（推算）');await w.setProps({snapshot:snapshot()});expect(w.text()).not.toContain('目录时间（推算）');expect(w.text()).toContain('结构完整，待完整校验');expect(w.text()).not.toContain('校验通过');});
+});

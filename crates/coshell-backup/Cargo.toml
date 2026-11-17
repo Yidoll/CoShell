@@ -1,0 +1,17 @@
+[package]
+name = "coshell-backup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2.workspace = true
+chacha20poly1305 = { workspace = true, features = ["std", "getrandom"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+sha2.workspace = true
+tokio.workspace = true
+quick-xml = "=0.42.0"
+zeroize.workspace = true

@@ -1,0 +1,31 @@
+[package]
+name = "coshell-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+chacha20poly1305 = { workspace = true, features = ["std", "getrandom"] }
+coshell-ai-provider = { path = "../coshell-ai-provider" }
+coshell-backup = { path = "../coshell-backup" }
+coshell-drivers = { path = "../coshell-drivers" }
+coshell-formats = { path = "../coshell-formats" }
+coshell-platform = { path = "../coshell-platform" }
+coshell-plugin-runtime = { path = "../coshell-plugin-runtime" }
+coshell-shell = { path = "../coshell-shell" }
+coshell-sql = { path = "../coshell-sql" }
+coshell-storage = { path = "../coshell-storage" }
+coshell-types = { path = "../coshell-types" }
+fs2.workspace = true
+getrandom.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+russh.workspace = true

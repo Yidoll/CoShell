@@ -1,0 +1,11 @@
+[package]
+name = "coshell-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+idna = "=1.1.0"
+rusqlite.workspace = true

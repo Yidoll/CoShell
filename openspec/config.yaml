@@ -1,0 +1,57 @@
+schema: spec-driven
+
+context: |
+  Language: zh-CN
+  All artifacts must be written in zh-CN.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+  Product: CoShell is a multi-entry application built around a shared Rust core.
+  Baseline architecture: docs/coshell-architecture.md and crates/ARCHITECTURE.md.
+  Reference architecture: docs/dbx-technical-architecture.md.
+  Stack: Rust 1.88, Tauri 2, Axum, Vue 3, Pinia, TypeScript, Vite, pnpm 10.
+  Runtime entries: Tauri desktop, Axum Web, native CLI, and MCP stdio server.
+  Frontend boundary: components and stores call apps/desktop/src/lib/backend/api.ts only;
+  api.ts selects signature-compatible Tauri and HTTP transports at runtime.
+  Rust ownership: coshell-core owns application orchestration. Lower crates own types,
+  platform primitives, SQL, drivers, formats, AI providers, and plugin runtime behavior.
+  Dependency direction: lower crates MUST NOT depend on coshell-core or any entry crate;
+  coshell-core MUST NOT depend on Web, CLI, MCP, or desktop entry crates.
+  Cross-runtime behavior: shared features normally require both a Tauri command and an
+  Axum route backed by one coshell-core operation. Host-only capabilities must expose an
+  explicit unsupported result in other runtimes.
+  Extension boundaries: agents are versioned JSON-RPC subprocesses; plugins require a
+  manifest, explicit permissions, lifecycle isolation, and future signature verification.
+  Safety: credentials, writes, remote execution, plugins, AI tools, and long-running jobs
+  require explicit threat, authorization, timeout, cancellation, retry, and redaction rules.
+  Validation baseline: pnpm architecture, pnpm typecheck, pnpm test, pnpm build,
+  cargo fmt --all -- --check, cargo check --workspace, and cargo test --workspace.
+  The current initialization capability is health reporting. Do not infer database or
+  shell execution features that are not represented by an accepted specification.
+
+rules:
+  proposal:
+    - State the user outcome, affected runtimes, scope, and explicit non-goals.
+    - Identify security, compatibility, migration, and rollout impact when applicable.
+    - Reference existing specs that will be added, modified, or removed.
+  specs:
+    - Use testable observable behavior and include failure, cancellation, and degraded-mode scenarios where relevant.
+    - For shared frontend/backend capabilities, specify behavioral parity across Tauri and HTTP transports.
+    - Keep SHALL/MUST requirement keywords and OpenSpec structural headings in English; write descriptions in zh-CN.
+  design:
+    - Assign every behavior to its owning crate or entry adapter and show dependency direction.
+    - Document protocol DTOs, stable error codes, state lifecycle, idempotency, and resource cleanup when applicable.
+    - Explain alternatives for cross-runtime, security-sensitive, or externally versioned changes.
+  tasks:
+    - Break work into ordered, independently verifiable steps with concrete repository paths.
+    - Include focused tests plus architecture, type, build, and Rust checks proportional to the change risk.
+    - Keep generated artifacts, docs, transport adapters, and shared contracts synchronized.
+
+operations:
+  apply:
+    guidance:
+      - Read docs/coshell-architecture.md and crates/ARCHITECTURE.md before changing module boundaries.
+      - Preserve unrelated worktree changes and implement shared business behavior once in its owning layer.
+      - Report commands actually run, failures, and environment limitations; never claim unrun live tests passed.
+  archive:
+    guidance:
+      - Run openspec validate --strict for the change before archiving.
+      - Confirm completed tasks, synchronized specs, validation evidence, and any documented residual risk.

@@ -257,7 +257,7 @@ async fn encrypted_private_key_authentication_is_temporary_and_errors_are_redact
         .await
         .unwrap()
     {
-        OpenResult::Connected { session_id } => session_id,
+        OpenResult::Connected { session_id, .. } => session_id,
         _ => panic!(),
     };
     runtime.close(&session).await.unwrap();
@@ -373,7 +373,7 @@ async fn real_ssh_tofu_and_production_confirmation_precede_all_command_bytes() {
         .await
         .unwrap()
     {
-        OpenResult::Connected { session_id } => session_id,
+        OpenResult::Connected { session_id, .. } => session_id,
         _ => panic!("expected connection"),
     };
     let saved = runtime
@@ -494,7 +494,7 @@ async fn real_ssh_tofu_and_production_confirmation_precede_all_command_bytes() {
         .await
         .unwrap()
     {
-        OpenResult::Connected { session_id } => session_id,
+        OpenResult::Connected { session_id, .. } => session_id,
         _ => panic!("expected known host"),
     };
     runtime
@@ -548,7 +548,7 @@ async fn real_ssh_tofu_and_production_confirmation_precede_all_command_bytes() {
         .await
         .unwrap()
     {
-        OpenResult::Connected { session_id } => session_id,
+        OpenResult::Connected { session_id, .. } => session_id,
         _ => panic!("expected known host"),
     };
     assert!(runtime
@@ -656,4 +656,261 @@ async fn cancellation_before_and_during_handshake_stops_open_and_leaves_no_sessi
     drop(runtime);
     task.abort();
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[tokio::test]
+async fn saved_password_is_opt_in_survives_restart_and_is_bound_to_target() {
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    let temp = std::env::temp_dir().join(format!(
+        "coshell-password-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&temp).unwrap();
+    let path = temp.join("db.sqlite");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let config = Arc::new(russh::server::Config {
+        keys: vec![russh::keys::decode_secret_key(KEY, Some("blabla")).unwrap()],
+        auth_rejection_time: Duration::ZERO,
+        auth_rejection_time_initial: Some(Duration::ZERO),
+        ..Default::default()
+    });
+    struct PasswordServer(Arc<Mutex<&'static str>>);
+    impl russh::server::Handler for PasswordServer {
+        type Error = russh::Error;
+        async fn auth_password(
+            &mut self,
+            _: &str,
+            password: &str,
+        ) -> Result<russh::server::Auth, Self::Error> {
+            Ok(if password == *self.0.lock().unwrap() {
+                russh::server::Auth::Accept
+            } else {
+                russh::server::Auth::reject()
+            })
+        }
+    }
+    let accepted_password = Arc::new(Mutex::new("ok"));
+    let state = accepted_password.clone();
+    let server = tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            let config = config.clone();
+            let state = state.clone();
+            tokio::spawn(async move {
+                if let Ok(session) =
+                    russh::server::run_stream(config, socket, PasswordServer(state)).await
+                {
+                    let _ = session.await;
+                }
+            });
+        }
+    });
+    let runtime = DesktopRuntime::open(&path).unwrap();
+    let mut profile = runtime
+        .save(ConnectionDto {
+            id: "pwd".into(),
+            name: "pwd".into(),
+            host: "127.0.0.1".into(),
+            port,
+            username: "test".into(),
+            authentication: "password".into(),
+            group_id: None,
+            notes: String::new(),
+            production: true,
+            always_confirm: false,
+            version: 0,
+        })
+        .await
+        .unwrap();
+    let fingerprint = match runtime
+        .open_ssh(
+            "pwd".into(),
+            Some("ok".into()),
+            None,
+            "first".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        OpenResult::HostKeyConfirmation { fingerprint, .. } => fingerprint,
+        _ => panic!("expected host-key verification"),
+    };
+    assert_eq!(runtime.ssh_password_state("pwd").await.unwrap(), "missing");
+    let (session, token) = match runtime
+        .open_ssh(
+            "pwd".into(),
+            Some("ok".into()),
+            Some(fingerprint),
+            "second".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        OpenResult::Connected {
+            session_id,
+            password_save_token: Some(token),
+        } => (session_id, token),
+        _ => panic!("expected authenticated session and consent token"),
+    };
+    assert_eq!(runtime.ssh_password_state("pwd").await.unwrap(), "missing");
+    runtime
+        .ssh_password_decision(&token, "test-save", true)
+        .await
+        .unwrap();
+    runtime
+        .ssh_password_decision(&token, "test-save", true)
+        .await
+        .unwrap();
+    assert!(runtime
+        .ssh_password_decision(&token, "other", true)
+        .await
+        .is_err());
+    runtime.close(&session).await.unwrap();
+    drop(runtime);
+    let runtime = DesktopRuntime::open(&path).unwrap();
+    assert_eq!(
+        runtime.ssh_password_state("pwd").await.unwrap(),
+        "available"
+    );
+    let session = match runtime
+        .open_ssh_with_credentials(
+            "pwd".into(),
+            None,
+            None,
+            "saved".into(),
+            None,
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+    {
+        OpenResult::Connected {
+            session_id,
+            password_save_token: None,
+        } => session_id,
+        _ => panic!("saved password should authenticate without a prompt"),
+    };
+    runtime.close(&session).await.unwrap();
+    runtime.copy("pwd", "copy", "copy").await.unwrap();
+    assert_eq!(runtime.ssh_password_state("copy").await.unwrap(), "missing");
+    let manual = |id: &str, password: &str, operation: &str| {
+        runtime.open_ssh(
+            id.to_owned(),
+            Some(password.to_owned()),
+            None,
+            operation.to_owned(),
+            None,
+            None,
+        )
+    };
+    let declined_session = match manual("copy", "ok", "manual-copy").await.unwrap() {
+        OpenResult::Connected {
+            session_id,
+            password_save_token: Some(token),
+        } => {
+            runtime
+                .ssh_password_decision(&token, "decline-copy", false)
+                .await
+                .unwrap();
+            assert!(runtime
+                .ssh_password_decision(&token, "decline-copy", true)
+                .await
+                .is_err());
+            session_id
+        }
+        _ => panic!("expected copy target to ask"),
+    };
+    assert!(!runtime.read(&declined_session).await.unwrap().closed);
+    runtime.close(&declined_session).await.unwrap();
+    let second_copy = match manual("copy", "ok", "manual-copy-again").await.unwrap() {
+        OpenResult::Connected {
+            session_id,
+            password_save_token: None,
+        } => session_id,
+        _ => panic!("declined choice should be respected"),
+    };
+    runtime.close(&second_copy).await.unwrap();
+    *accepted_password.lock().unwrap() = "new";
+    let saved_auth = |operation: &str| {
+        runtime.open_ssh_with_credentials(
+            "pwd".into(),
+            None,
+            None,
+            operation.into(),
+            None,
+            None,
+            false,
+            true,
+        )
+    };
+    assert!(
+        matches!(saved_auth("rejected").await, Err(code) if code == "SSH_SAVED_PASSWORD_REJECTED")
+    );
+    let (manual_session, replacement) = match manual("pwd", "new", "new-manual").await.unwrap() {
+        OpenResult::Connected {
+            session_id,
+            password_save_token: Some(token),
+        } => (session_id, token),
+        _ => panic!("expected a fresh consent for the replacement"),
+    };
+    runtime
+        .ssh_password_decision(&replacement, "save-new", true)
+        .await
+        .unwrap();
+    runtime.close(&manual_session).await.unwrap();
+    let session = match saved_auth("saved-new").await.unwrap() {
+        OpenResult::Connected {
+            session_id,
+            password_save_token: None,
+        } => session_id,
+        _ => panic!("replacement password should authenticate"),
+    };
+    runtime.close(&session).await.unwrap();
+    use coshell_platform::secret_store::{PlatformSecretStore, SecretStore};
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let reference: String = db.query_row("SELECT secret_id FROM connection_secret_refs WHERE connection_id='pwd' AND secret_type='password'", [], |row| row.get(0)).unwrap();
+    drop(db);
+    let platform = PlatformSecretStore::for_data_dir(&temp).unwrap();
+    platform.delete(&reference).unwrap();
+    assert_eq!(
+        runtime.ssh_password_state("pwd").await.unwrap(),
+        "unavailable"
+    );
+    assert!(
+        matches!(saved_auth("missing-os-secret").await, Err(code) if code == "SSH_PASSWORD_UNAVAILABLE")
+    );
+    let (manual_session, stale_token) =
+        match manual("pwd", "new", "manual-before-edit").await.unwrap() {
+            OpenResult::Connected {
+                session_id,
+                password_save_token: Some(token),
+            } => (session_id, token),
+            _ => panic!("manual authentication should remain available"),
+        };
+    profile.username = "other-user".into();
+    runtime.save(profile).await.unwrap();
+    assert_eq!(runtime.ssh_password_state("pwd").await.unwrap(), "missing");
+    assert!(runtime
+        .ssh_password_decision(&stale_token, "stale", true)
+        .await
+        .is_err());
+    runtime.close(&manual_session).await.unwrap();
+    assert!(runtime.delete("pwd").await.unwrap());
+    server.abort();
+    drop(runtime);
+    std::fs::remove_dir_all(temp).unwrap();
 }

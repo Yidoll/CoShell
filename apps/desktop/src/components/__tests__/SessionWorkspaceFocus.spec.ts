@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   connectionCopy: vi.fn(), connectionDelete: vi.fn(), connectionSave: vi.fn(), groupDelete: vi.fn(), groupSave: vi.fn(),
   serverOverview: vi.fn(), serverOverviewCancel: vi.fn().mockResolvedValue(undefined), sessionClose: vi.fn().mockResolvedValue(undefined),
   sessionRead: vi.fn(), sessionSubmit: vi.fn(), sessionWrite: vi.fn(), sessionResize: vi.fn(), sshCancel: vi.fn(), sshOpen: vi.fn(),
+  sshPasswordState: vi.fn().mockResolvedValue('missing'), sshPasswordDecision: vi.fn().mockResolvedValue(undefined),
   savedCommandList: vi.fn().mockResolvedValue([]), savedCommandSave: vi.fn(), savedCommandDelete: vi.fn(),
   connectionKeyStatus: vi.fn().mockResolvedValue(false), connectionKeySave: vi.fn(), connectionKeyDelete: vi.fn(),
 }));

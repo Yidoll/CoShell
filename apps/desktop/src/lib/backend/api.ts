@@ -37,7 +37,9 @@ export async function connectionDelete(id: string) { return (await resolveBacken
 export async function groupList() { return (await resolveBackend()).groupList(); }
 export async function groupSave(input: ConnectionGroup) { return (await resolveBackend()).groupSave(input); }
 export async function groupDelete(id: string) { return (await resolveBackend()).groupDelete(id); }
-export async function sshOpen(connectionId: string, password: string | null, operationId: string, acceptedFingerprint?: string, privateKey?: string | null, passphrase?: string | null, useSavedKey?: boolean) { return (await resolveBackend()).sshOpen(connectionId, password, operationId, acceptedFingerprint, privateKey, passphrase, useSavedKey); }
+export async function sshOpen(connectionId: string, password: string | null, operationId: string, acceptedFingerprint?: string, privateKey?: string | null, passphrase?: string | null, useSavedKey?: boolean, useSavedPassword?: boolean) { return (await resolveBackend()).sshOpen(connectionId, password, operationId, acceptedFingerprint, privateKey, passphrase, useSavedKey, useSavedPassword); }
+export async function sshPasswordState(connectionId: string) { return (await resolveBackend()).sshPasswordState(connectionId); }
+export async function sshPasswordDecision(token: string, operationId: string, save: boolean) { return (await resolveBackend()).sshPasswordDecision(token, operationId, save); }
 export async function sshKeySaved(connectionId: string) { return (await resolveBackend()).sshKeySaved(connectionId); }
 export async function sshKeySave(connectionId: string, privateKey: string, passphrase: string | null) { return (await resolveBackend()).sshKeySave(connectionId, privateKey, passphrase); }
 export async function sshKeyDelete(connectionId: string) { return (await resolveBackend()).sshKeyDelete(connectionId); }
@@ -48,6 +50,7 @@ export async function webdavTestCancel(operationId: string) { return (await reso
 export async function webdavAutoGet() { return (await resolveBackend()).webdavAutoGet(); }
 export async function webdavAutoSet(intervalMinutes: number | null, acceptPlaintext: boolean) { return (await resolveBackend()).webdavAutoSet(intervalMinutes, acceptPlaintext); }
 export async function webdavSaveConfig(input: import('./types').DavConfig, password: string | null, operationId: string) { return (await resolveBackend()).webdavSaveConfig(input, password, operationId); }
+export async function webdavConfigSaveStatus(operationId: string) { return (await resolveBackend()).webdavConfigSaveStatus(operationId); }
 export async function webdavSync(passphrase: string, operationId: string) { return (await resolveBackend()).webdavSync(passphrase, operationId); }
 export async function webdavReconcile(operationId:string){return(await resolveBackend()).webdavReconcile(operationId);}
 export async function webdavSyncStatus(operationId: string) { return (await resolveBackend()).webdavSyncStatus(operationId); }

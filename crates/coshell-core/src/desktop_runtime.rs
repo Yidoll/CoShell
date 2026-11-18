@@ -27,6 +27,7 @@ use std::{
 use tokio::sync::Mutex as AsyncMutex;
 #[cfg(test)]
 mod directory_tests;
+mod passwords;
 struct RuntimeSecretStore(Arc<dyn coshell_platform::secret_store::SecretStore>);
 impl coshell_platform::secret_store::SecretStore for RuntimeSecretStore {
     fn accepts_data_dir(&self, path: &Path) -> bool {
@@ -70,6 +71,8 @@ pub struct WebDavConfigDto {
     pub remote_directory: String,
     pub username: String,
     pub has_credential: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_pending: Option<bool>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,6 +122,75 @@ impl From<GroupDto> for GroupRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(windows, target_os = "macos"))]
+    #[tokio::test]
+    async fn webdav_credentials_are_replaced_together_and_used_for_server_check() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = std::env::temp_dir().join(format!("coshell-webdav-save-test-{}", id().unwrap()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let runtime = DesktopRuntime::open(&path).unwrap();
+        let mut config = WebDavConfigDto {
+            url,
+            remote_directory: "/old".into(),
+            username: "old".into(),
+            has_credential: false,
+            cleanup_pending: None,
+        };
+        runtime
+            .webdav_save_config(config.clone(), Some("old".into()), "old-op".into())
+            .await
+            .unwrap();
+        config.username = "new".into();
+        config.remote_directory = "/new-directory".into();
+        assert!(
+            matches!(runtime.webdav_save_config(config.clone(), None, "missing-op".into()).await, Err(code) if code == "WEBDAV_PASSWORD_REQUIRED")
+        );
+        assert_eq!(runtime.webdav_config().unwrap().unwrap().username, "old");
+        let saved = runtime
+            .webdav_save_config(config, Some("fresh".into()), "new-op".into())
+            .await
+            .unwrap();
+        assert!(saved.has_credential);
+        assert_eq!(saved.remote_directory, "/new-directory");
+        assert_eq!(
+            runtime.webdav_config_save_status("new-op").await.unwrap(),
+            "committed"
+        );
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") && request.len() < 4096 {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+            assert!(request.starts_with("propfind / http/1.1\r\n"));
+            assert!(request.contains("authorization: basic bmv3omzyzxno\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 207 Multi-Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        runtime
+            .webdav_test_config("check-new-target")
+            .await
+            .unwrap();
+        server.await.unwrap();
+        let reference = runtime
+            .webdav_config_with_ref()
+            .unwrap()
+            .unwrap()
+            .1
+            .unwrap();
+        use coshell_platform::secret_store::SecretStore;
+        runtime.webdav_store().unwrap().delete(&reference).unwrap();
+        drop(runtime);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[tokio::test]
     async fn sync_preflight_reports_missing_collection_without_writes() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -343,6 +415,7 @@ mod tests {
                     remote_directory: "/".into(),
                     username: "u".into(),
                     has_credential: false,
+                    cleanup_pending: None,
                 },
                 None,
                 "op".into(),
@@ -1072,6 +1145,8 @@ impl From<ConnectionDto> for ConnectionRecord {
 pub enum OpenResult {
     Connected {
         session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        password_save_token: Option<String>,
     },
     HostKeyConfirmation {
         host: String,
@@ -1242,6 +1317,7 @@ pub struct DesktopRuntime {
     saved_lock: Mutex<()>,
     saved_pending: Mutex<HashMap<String, (String, u64, std::time::Instant)>>,
     operations: Mutex<HashMap<String, OpenOperation>>,
+    passwords: passwords::PasswordOffers,
     overview_operations: Arc<Mutex<OverviewStore>>,
     overview_cancelled: Mutex<HashMap<String, (String, std::time::Instant)>>,
     webdav_previews: Mutex<HashMap<String, WebDavPreviewState>>,
@@ -1536,23 +1612,21 @@ impl DesktopRuntime {
             .map_err(|_| error("无法安全保存同步队列密钥"))?;
         Ok(key)
     }
+    // Read the committed metadata and credential reference from the same row.
+    fn webdav_config_with_ref(&self) -> Result<Option<(WebDavConfigDto, Option<String>)>, String> {
+        use rusqlite::OptionalExtension;
+        let db = rusqlite::Connection::open_with_flags(
+            self.webdav_path()?,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|_| error("读取 WebDAV 配置失败"))?;
+        db.query_row("SELECT url,remote_directory,username,credential_secret_id FROM active_webdav_profiles WHERE id='default'", [], |row| {
+            let reference: Option<String> = row.get(3)?;
+            Ok((WebDavConfigDto { url: row.get(0)?, remote_directory: row.get(1)?, username: row.get(2)?, has_credential: reference.is_some(), cleanup_pending: None }, reference))
+        }).optional().map_err(|_| error("读取 WebDAV 配置失败"))
+    }
     pub fn webdav_config(&self) -> Result<Option<WebDavConfigDto>, String> {
-        let path = self.webdav_path()?;
-        let profile = crate::webdav_config::get_profile(path, &Self::webdav_flags(), "default")
-            .map_err(|_| error("读取 WebDAV 配置失败"))?;
-        let Some(profile) = profile else {
-            return Ok(None);
-        };
-        let db =
-            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .map_err(|_| error("读取 WebDAV 配置失败"))?;
-        let has_credential:bool = db.query_row("SELECT credential_secret_id IS NOT NULL FROM active_webdav_profiles WHERE id='default'", [], |r|r.get(0)).map_err(|_|error("读取 WebDAV 配置失败"))?;
-        Ok(Some(WebDavConfigDto {
-            url: profile.url,
-            remote_directory: profile.remote_directory,
-            username: profile.username,
-            has_credential,
-        }))
+        Ok(self.webdav_config_with_ref()?.map(|(config, _)| config))
     }
     pub async fn webdav_save_config(
         &self,
@@ -1570,16 +1644,64 @@ impl DesktopRuntime {
             username: input.username,
             auto_backup: false,
         };
-        crate::webdav_config::save_profile(
+        let saved = crate::webdav_config::save_profile(
             self.webdav_path()?,
             &store,
             &Self::webdav_flags(),
             &profile,
             secret.as_ref().map(|s| (operation_id.as_str(), s)),
         )
-        .map_err(|e| format!("WebDAV 配置保存失败: {e:?}"))?;
-        self.webdav_config()?
-            .ok_or_else(|| error("读取 WebDAV 配置失败"))
+        .map_err(|e| {
+            use crate::secret_compensation::CoordinatorError;
+            use crate::webdav_config::ConfigError;
+            match e {
+                ConfigError::CredentialTargetChanged => error("WEBDAV_PASSWORD_REQUIRED"),
+                ConfigError::Credential(
+                    CoordinatorError::CommitUnknown | CoordinatorError::CleanupPending,
+                ) => error("WEBDAV_CONFIG_SAVE_UNKNOWN"),
+                _ => error("WEBDAV_CONFIG_SAVE_FAILED"),
+            }
+        })?;
+        let mut config = self
+            .webdav_config()?
+            .ok_or_else(|| error("WEBDAV_CONFIG_SAVE_UNKNOWN"))?;
+        config.cleanup_pending = saved.cleanup_pending.then_some(true);
+        Ok(config)
+    }
+    pub async fn webdav_config_save_status(&self, operation: &str) -> Result<String, String> {
+        use crate::webdav_config::CredentialStatus;
+        let _gate = self.webdav_gate.lock().await;
+        let path = self.webdav_path()?;
+        let store = self.webdav_store()?;
+        let flags = Self::webdav_flags();
+        let read = || {
+            crate::webdav_config::operation_status(path, &store, &flags, "default", operation)
+                .map_err(|_| error("WEBDAV_CONFIG_STATUS_UNAVAILABLE"))
+        };
+        let mut status = read()?;
+        if matches!(
+            status,
+            CredentialStatus::Staged
+                | CredentialStatus::Committed {
+                    cleanup_pending: true
+                }
+        ) {
+            let _ = crate::webdav_config::recover_credentials(path, &store, &flags);
+            status = read()?;
+        }
+        Ok(match status {
+            CredentialStatus::NotFound => "not_found",
+            CredentialStatus::Staged => "pending",
+            CredentialStatus::Aborted => "aborted",
+            CredentialStatus::AbortedRetainedRuns => "aborted_retained_runs",
+            CredentialStatus::Committed {
+                cleanup_pending: true,
+            } => "committed_cleanup_pending",
+            CredentialStatus::Committed {
+                cleanup_pending: false,
+            } => "committed",
+        }
+        .into())
     }
     fn webdav_source_binding(&self, base: &str) -> Result<String, String> {
         use sha2::{Digest, Sha256};
@@ -1601,20 +1723,15 @@ impl DesktopRuntime {
         server_only: bool,
     ) -> Result<(coshell_backup::webdav::WebDav, String), String> {
         use coshell_platform::secret_store::SecretStore;
-        let config = self
-            .webdav_config()?
-            .ok_or_else(|| error("请先配置 WebDAV"))?;
         let path = self.webdav_path()?;
-        let db =
-            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .map_err(|_| error("读取 WebDAV 凭据失败"))?;
-        let secret_id: Option<String> = db
-            .query_row(
-                "SELECT credential_secret_id FROM active_webdav_profiles WHERE id='default'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|_| error("读取 WebDAV 凭据失败"))?;
+        let directory = path
+            .parent()
+            .ok_or_else(|| error("WebDAV 数据目录不可用"))?;
+        let _lock = crate::secret_compensation::SecretOperationLock::acquire(directory)
+            .map_err(|_| error("WebDAV 凭据存储不可用"))?;
+        let (config, secret_id) = self
+            .webdav_config_with_ref()?
+            .ok_or_else(|| error("请先配置 WebDAV"))?;
         let store = self.webdav_store()?;
         let secret = secret_id
             .map(|id| {
@@ -2274,6 +2391,7 @@ impl DesktopRuntime {
             saved_lock: Mutex::new(()),
             saved_pending: Mutex::new(HashMap::new()),
             operations: Mutex::new(HashMap::new()),
+            passwords: passwords::PasswordOffers::default(),
             overview_operations: Arc::new(Mutex::new(OverviewStore::default())),
             overview_cancelled: Mutex::new(HashMap::new()),
             webdav_previews: Mutex::new(HashMap::new()),
@@ -2525,7 +2643,16 @@ impl DesktopRuntime {
             return Err(error("该连接正在执行命令，请稍后再修改"));
         }
         let key = input.id.clone();
-        self.service.save(&input.into()).map_err(|e| e.code)?;
+        let record: ConnectionRecord = input.into();
+        let previous = self.service.get(&key).map_err(|e| e.code)?;
+        self.service.save(&record).map_err(|e| e.code)?;
+        if previous
+            .as_ref()
+            .is_some_and(|previous| !passwords::same_target(previous, &record))
+        {
+            self.passwords.discard_connection(&key);
+            self.recover_password_cleanup();
+        }
         self.service
             .get(&key)
             .map_err(|e| e.code)?
@@ -2650,9 +2777,16 @@ impl DesktopRuntime {
         {
             return Err(error("CONNECTION_ACTIVE"));
         }
-        let removed = self.service.delete(id).map_err(|e| e.code)?;
+        let removed = if self.path.is_some() {
+            self.service.delete_with_password_cleanup(id)
+        } else {
+            self.service.delete(id)
+        }
+        .map_err(|e| e.code)?;
         if removed {
             state.challenges.remove(id);
+            self.passwords.discard_connection(id);
+            self.recover_password_cleanup();
         }
         Ok(removed)
     }
@@ -2718,6 +2852,30 @@ impl DesktopRuntime {
         passphrase: Option<String>,
         use_saved_key: bool,
     ) -> Result<OpenResult, String> {
+        self.open_ssh_with_credentials(
+            connection_id,
+            password,
+            accepted_fingerprint,
+            operation_id,
+            private_key,
+            passphrase,
+            use_saved_key,
+            false,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_ssh_with_credentials(
+        &self,
+        connection_id: String,
+        password: Option<String>,
+        accepted_fingerprint: Option<String>,
+        operation_id: String,
+        private_key: Option<String>,
+        passphrase: Option<String>,
+        use_saved_key: bool,
+        use_saved_password: bool,
+    ) -> Result<OpenResult, String> {
         let password = password.map(zeroize::Zeroizing::new);
         let private_key = private_key.map(zeroize::Zeroizing::new);
         let passphrase = passphrase.map(zeroize::Zeroizing::new);
@@ -2763,6 +2921,15 @@ impl DesktopRuntime {
             .get(&connection_id)
             .map_err(|e| e.code)?
             .ok_or_else(|| error("CONNECTION_NOT_FOUND"))?;
+        if use_saved_password
+            && (record.authentication != "password"
+                || use_saved_key
+                || password.is_some()
+                || private_key.is_some()
+                || passphrase.is_some())
+        {
+            return Err(error("SSH_PASSWORD_UNAVAILABLE"));
+        }
         if use_saved_key
             && (record.authentication != "private_key"
                 || private_key.is_some()
@@ -2783,6 +2950,10 @@ impl DesktopRuntime {
             connecting: state.connecting.clone(),
         };
         let authentication = match record.authentication.as_str() {
+            "password" if use_saved_password => Authentication::Password(
+                self.saved_password(&record)?
+                    .ok_or_else(|| error("SSH_PASSWORD_UNAVAILABLE"))?,
+            ),
             "password" => Authentication::Password(Secret::new(
                 password
                     .as_ref()
@@ -2859,7 +3030,7 @@ impl DesktopRuntime {
                 ConnectionRequest {
                     host: record.host.clone(),
                     port: record.port,
-                    username: record.username,
+                    username: record.username.clone(),
                     authentication,
                 },
                 &verifier,
@@ -2902,6 +3073,9 @@ impl DesktopRuntime {
                 }
                 return Err(error("主机密钥未被接受"));
             }
+            Err(SshError::AuthenticationFailed) if use_saved_password => {
+                return Err(error("SSH_SAVED_PASSWORD_REJECTED"));
+            }
             Err(e) => return Err(ssh_error(e)),
         };
         let channel = if record.production {
@@ -2921,7 +3095,7 @@ impl DesktopRuntime {
             ))
         };
         let session_id = id()?;
-        {
+        let password_save_token = {
             let mut state = self.state.lock().await;
             if state.sessions.len() >= 32
                 || self
@@ -2939,6 +3113,13 @@ impl DesktopRuntime {
             if op.cancellation.is_cancelled() {
                 return Err(error("连接已取消"));
             }
+            let offer = if record.authentication == "password" {
+                password.as_ref().and_then(|password| {
+                    self.offer_password(&session_id, &record, password.as_bytes())
+                })
+            } else {
+                None
+            };
             op.session_id = Some(session_id.clone());
             state.sessions.insert(
                 session_id.clone(),
@@ -2959,8 +3140,12 @@ impl DesktopRuntime {
                     inflight_done: tokio::sync::Notify::new(),
                 }),
             );
-        }
-        Ok(OpenResult::Connected { session_id })
+            offer
+        };
+        Ok(OpenResult::Connected {
+            session_id,
+            password_save_token,
+        })
     }
     pub async fn cancel_open(&self, operation_id: &str) -> Result<(), String> {
         if operation_id.is_empty() || operation_id.len() > 128 {
@@ -3017,8 +3202,12 @@ impl DesktopRuntime {
                 output: String::new(),
                 closed: false,
             }),
-            Ok(Err(_)) => Err(error("终端读取失败")),
+            Ok(Err(_)) => {
+                self.passwords.discard_session(session_id);
+                Err(error("终端读取失败"))
+            }
             Ok(Ok(None)) => {
+                self.passwords.discard_session(session_id);
                 let output = String::from_utf8_lossy(&pending).into_owned();
                 pending.clear();
                 Ok(ReadResult {
@@ -3471,6 +3660,7 @@ impl DesktopRuntime {
     }
     pub async fn close(&self, session_id: &str) -> Result<(), String> {
         self.remote_files.cancel_session(session_id);
+        self.passwords.discard_session(session_id);
         let session = {
             let state = self.state.lock().await;
             let session = state.sessions.get(session_id).cloned();

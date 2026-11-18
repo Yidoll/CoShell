@@ -99,7 +99,10 @@ pub fn apply(
             "ssh_private_key_bundle_v1" => {
                 crate::ssh_key_store::validate_restored_bundle(s.value, record)
             }
-            "password" => record.authentication == "password",
+            "password" => {
+                record.authentication == "password"
+                    && crate::ssh_password_store::valid_password(s.value)
+            }
             _ => false,
         } {
             return Err(RestoreError::Invalid);

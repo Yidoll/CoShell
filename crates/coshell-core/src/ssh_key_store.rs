@@ -42,7 +42,7 @@ impl Drop for Bundle {
     }
 }
 
-fn context<'a>(
+pub(crate) fn context<'a>(
     path: &'a Path,
     store: &dyn SecretStore,
 ) -> Result<(SecretOperationLock, rusqlite::Connection), &'static str> {

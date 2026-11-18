@@ -19,6 +19,7 @@ pub mod overview;
 pub mod secret_compensation;
 pub mod session;
 pub mod ssh_key_store;
+mod ssh_password_store;
 pub mod webdav_config;
 pub mod webdav_test;
 

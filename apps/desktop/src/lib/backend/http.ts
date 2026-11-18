@@ -36,17 +36,21 @@ export async function connectionDelete(_id: string): Promise<boolean> { return u
 export async function groupList(): Promise<ConnectionGroup[]> { return unsupported(); }
 export async function groupSave(_input: ConnectionGroup): Promise<void> { return unsupported(); }
 export async function groupDelete(_id: string): Promise<boolean> { return unsupported(); }
-export async function sshOpen(_connectionId: string, _password: string | null, _operationId: string, _acceptedFingerprint?: string, _privateKey?: string | null, _passphrase?: string | null, _useSavedKey?: boolean): Promise<SshOpenResult> { return unsupported(); }
+export async function sshOpen(_connectionId: string, _password: string | null, _operationId: string, _acceptedFingerprint?: string, _privateKey?: string | null, _passphrase?: string | null, _useSavedKey?: boolean, _useSavedPassword?: boolean): Promise<SshOpenResult> { return unsupported(); }
+export async function sshPasswordState(_connectionId: string): Promise<import('./types').SshPasswordState> { return unsupported(); }
+export async function sshPasswordDecision(_token: string, _operationId: string, _save: boolean): Promise<void> { return unsupported(); }
 export async function sshKeySaved(_connectionId: string): Promise<boolean> { return unsupported(); }
 export async function sshKeySave(_connectionId: string, _privateKey: string, _passphrase: string | null): Promise<void> { return unsupported(); }
 export async function sshKeyDelete(_connectionId: string): Promise<void> { return unsupported(); }
 export async function sshKeyOperationStatus(_connectionId: string, _operationId: string): Promise<string> { return unsupported(); }
-export async function webdavGetConfig(): Promise<import('./types').DavConfig | null> { return unsupported(); }
-export async function webdavTestConfig(_operationId: string): Promise<string> { return unsupported(); }
-export async function webdavTestCancel(_operationId: string): Promise<void> { return unsupported(); }
+function unsupportedWebDavConfig(): never { throw new Error('WEBDAV_CONFIG_UNSUPPORTED'); }
+export async function webdavGetConfig(): Promise<import('./types').DavConfig | null> { return unsupportedWebDavConfig(); }
+export async function webdavTestConfig(_operationId: string): Promise<string> { return unsupportedWebDavConfig(); }
+export async function webdavTestCancel(_operationId: string): Promise<void> { return unsupportedWebDavConfig(); }
 export async function webdavAutoGet(): Promise<[number | null, string]> { return unsupported(); }
 export async function webdavAutoSet(_intervalMinutes: number | null, _acceptPlaintext: boolean): Promise<void> { return unsupported(); }
-export async function webdavSaveConfig(_input: import('./types').DavConfig, _password: string | null, _operationId: string): Promise<void> { return unsupported(); }
+export async function webdavSaveConfig(_input: import('./types').DavConfig, _password: string | null, _operationId: string): Promise<import('./types').DavConfig> { return unsupportedWebDavConfig(); }
+export async function webdavConfigSaveStatus(_operationId: string): Promise<import('./types').DavConfigSaveStatus> { return unsupportedWebDavConfig(); }
 export async function webdavSync(_passphrase: string, _operationId: string): Promise<string> { return unsupported(); }
 export async function webdavReconcile(_operationId:string):Promise<string>{return unsupported();}
 export async function webdavSyncStatus(_operationId: string): Promise<{state:string;error:string|null;cleanupPending:boolean;possibleObjects:string[]}|null> { return unsupported(); }

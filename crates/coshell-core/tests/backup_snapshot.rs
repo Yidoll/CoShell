@@ -187,6 +187,12 @@ async fn encrypted_snapshot_includes_only_selected_connection_data() {
     repo.prepare_secret_write("operation", "c", "password", "connection-secret-id")
         .unwrap();
     repo.commit_secret_write("operation").unwrap();
+    // The user declined saving the password for this connection. Its metadata
+    // travels with the backup, but no password is available to export.
+    let mut declined = repo.get_connection("c").unwrap().unwrap();
+    declined.id = "declined".into();
+    declined.name = "manual only".into();
+    repo.save_connection(&declined).unwrap();
     drop(repo);
     db.execute("INSERT INTO trusted_host_keys(host,port,algorithm,fingerprint) VALUES ('example.org',22,'ssh-ed25519','fingerprint')", []).unwrap();
     db.execute("INSERT INTO command_history(id,connection_id,connection_name,production,command,submitted_at,outcome) VALUES ('h','c','host',1,'history-sentinel','2026-01-01T00:00:00Z','unknown')", []).unwrap();
@@ -240,6 +246,24 @@ async fn encrypted_snapshot_includes_only_selected_connection_data() {
             assert_eq!(bytes, b"connection-secret");
         }
     }
+    let plain = create_backup(
+        &path,
+        &Store,
+        b"",
+        BackupOptions {
+            include_secrets: true,
+        },
+        &FeatureFlags::default().with_enabled(Feature::WebDavBackup),
+    )
+    .unwrap();
+    let (inspection, inspected_secrets) =
+        coshell_core::backup_inspection::inspect_for_restore(&plain, b"").unwrap();
+    assert_eq!(inspected_secrets.len(), 1);
+    assert_eq!(inspected_secrets[0].connection_id, "c");
+    let preview = serde_json::to_string(&inspection).unwrap();
+    assert!(preview.contains("declined"));
+    assert!(!preview.contains("connection-secret"));
+    assert!(!preview.contains("secret_type"));
     assert_eq!(
         sessions.scrollback("session").await.unwrap(),
         b"terminal-output-sentinel"

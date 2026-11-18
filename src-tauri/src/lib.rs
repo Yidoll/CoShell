@@ -190,6 +190,13 @@ async fn webdav_save_config(
         .await
 }
 #[tauri::command]
+async fn webdav_config_save_status(
+    runtime: tauri::State<'_, DesktopRuntime>,
+    operation_id: String,
+) -> Result<String, String> {
+    runtime.webdav_config_save_status(&operation_id).await
+}
+#[tauri::command]
 async fn webdav_sync(
     runtime: tauri::State<'_, DesktopRuntime>,
     passphrase: String,
@@ -325,9 +332,10 @@ async fn ssh_open(
     private_key: Option<String>,
     passphrase: Option<String>,
     use_saved_key: Option<bool>,
+    use_saved_password: Option<bool>,
 ) -> Result<OpenResult, String> {
     runtime
-        .open_ssh_with_saved(
+        .open_ssh_with_credentials(
             connection_id,
             password,
             accepted_fingerprint,
@@ -335,7 +343,29 @@ async fn ssh_open(
             private_key,
             passphrase,
             use_saved_key.unwrap_or(false),
+            use_saved_password.unwrap_or(false),
         )
+        .await
+}
+#[tauri::command]
+async fn ssh_password_state(
+    runtime: tauri::State<'_, DesktopRuntime>,
+    connection_id: String,
+) -> Result<String, String> {
+    runtime
+        .ssh_password_state(&connection_id)
+        .await
+        .map(str::to_owned)
+}
+#[tauri::command]
+async fn ssh_password_decision(
+    runtime: tauri::State<'_, DesktopRuntime>,
+    token: String,
+    operation_id: String,
+    save: bool,
+) -> Result<(), String> {
+    runtime
+        .ssh_password_decision(&token, &operation_id, save)
         .await
 }
 #[tauri::command]
@@ -515,6 +545,7 @@ pub fn run() {
             webdav_test_config,
             webdav_test_cancel,
             webdav_save_config,
+            webdav_config_save_status,
             webdav_sync,
             webdav_sync_status,
             webdav_recent_syncs,
@@ -533,6 +564,8 @@ pub fn run() {
             group_save,
             group_delete,
             ssh_open,
+            ssh_password_state,
+            ssh_password_decision,
             ssh_key_saved,
             ssh_key_save,
             ssh_key_delete,

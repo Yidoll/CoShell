@@ -237,3 +237,29 @@ fn restart_recovers_staged_secret_after_interrupted_process() {
     drop(db);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
+#[test]
+fn password_restore_rejects_payloads_the_ssh_client_cannot_use() {
+    let path = setup();
+    let store = Store::default();
+    let mut db = rusqlite::Connection::open(&path).unwrap();
+    let expected = Repository::new(&mut db).snapshot().unwrap();
+    assert_eq!(
+        restore_secrets::apply(
+            &path,
+            &store,
+            "invalid-password",
+            &expected,
+            &expected,
+            &[IncomingSecret {
+                connection_id: "c",
+                secret_type: "password",
+                value: &[0xff]
+            }],
+        ),
+        Err(RestoreError::Invalid)
+    );
+    assert!(store.values.lock().unwrap().is_empty());
+    assert_eq!(Repository::new(&mut db).snapshot().unwrap(), expected);
+    drop(db);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Directive } from "vue";
-import { connectionCopy, connectionDelete, connectionList, connectionSave, groupDelete, groupList, groupSave, serverOverview, serverOverviewCancel, sessionClose, sessionRead, sessionSubmit, sessionWrite, sessionResize, sshCancel, sshOpen, sshKeySaved, sshKeySave, sshKeyDelete, sshKeyOperationStatus, sessionRunSaved } from "@/lib/backend/api";
+import { connectionCopy, connectionDelete, connectionList, connectionSave, groupDelete, groupList, groupSave, serverOverview, serverOverviewCancel, sessionClose, sessionRead, sessionSubmit, sessionWrite, sessionResize, sshCancel, sshOpen, sshPasswordState, sshPasswordDecision, sshKeySaved, sshKeySave, sshKeyDelete, sshKeyOperationStatus, sessionRunSaved } from "@/lib/backend/api";
 import type { ConnectionGroup, ConnectionProfile, HostKeyChallenge, Metric, ServerOverviewSnapshot, SessionSubmitResult, SavedCommand } from "@/lib/backend/types";
 import TerminalView from './TerminalView.vue';
 import RemoteFilesPanel from './RemoteFilesPanel.vue';
@@ -31,6 +31,9 @@ const filteredConnections = computed(() => {
 const selected = ref<ConnectionProfile | null>(null);
 const editor = ref<ConnectionProfile | null>(null);
 const password = ref("");
+const useSavedPassword = ref(false);
+const passwordSave = ref<{ token: string; session: string; operation: string } | null>(null);
+const savingPassword = ref(false);
 const privateKey = ref("");
 const passphrase = ref("");
 const keySaved = ref(false);
@@ -100,7 +103,7 @@ function metricText(metric: Metric | null | undefined): string {
   return `${metric.value} ${metric.unit}`.trim();
 }
 watch([sessionId, disconnected], ([id, offline], [previous]) => {
-  if (offline) { pastePending.value = ''; if (id) emit('disconnected'); }
+  if (offline) { passwordSave.value = null; pastePending.value = ''; if (id) emit('disconnected'); }
   cancelOverview();
   if (overviewTimer) clearInterval(overviewTimer); overviewTimer = undefined;
   if (id !== previous) { overview.value = null; overviewError.value = ""; overviewLastSuccess = 0; overviewStale.value = false; }
@@ -154,6 +157,8 @@ function message(value: unknown): string {
   if (value === "CONNECTION_ACTIVE") return "该连接存在活动会话，请先关闭会话。";
   if (value === "CONNECTION_HAS_SECRETS") return "该连接仍有关联凭据，暂无法删除。";
   if (value === "CONNECTION_CONFLICT") return "名称或分组冲突，请检查后重试。";
+  if (value === "SSH_PASSWORD_UNAVAILABLE") return "已保存的密码不可用，请手动输入密码。";
+  if (value === "SSH_SAVED_PASSWORD_REJECTED") return "服务器拒绝了已保存的密码，请手动输入新密码。";
   if (typeof value === "string") return value;
   if (value instanceof Error) return value.message;
   if (value && typeof value === "object" && "safeDetail" in value && typeof value.safeDetail === "string") return value.safeDetail;
@@ -207,10 +212,43 @@ function clearSecrets() { password.value = ""; privateKey.value = ""; passphrase
 function requestConnect(item: ConnectionProfile) {
   const lookupGeneration = ++openGeneration;
   selected.value = item; clearSecrets(); keySaved.value = false; useSavedKey.value = false; saveKey.value = false; challenge.value = null; connectDialog.value = true; error.value = "";
+  useSavedPassword.value = false;
+  if (item.authentication === 'password') void connectWithAvailablePassword(item.id, lookupGeneration);
   if (item.authentication === 'private_key') void sshKeySaved(item.id).then(saved => { if (lookupGeneration === openGeneration && selected.value?.id === item.id && connectDialog.value) { keySaved.value = saved; useSavedKey.value = saved; } }).catch(e => { if (lookupGeneration === openGeneration && selected.value?.id === item.id && connectDialog.value) error.value = message(e); });
 }
+async function connectWithAvailablePassword(connectionId: string, generation: number) {
+  const state = await sshPasswordState(connectionId).catch(() => 'unavailable');
+  if (disposed || generation !== openGeneration || !connectDialog.value || password.value) return;
+  if (state === 'available') {
+    useSavedPassword.value = true;
+    await open();
+  } else if (state === 'unavailable') {
+    error.value = message('SSH_PASSWORD_UNAVAILABLE');
+  }
+}
+
+async function decidePasswordSave(save: boolean) {
+  const request = passwordSave.value;
+  if (!request || savingPassword.value || request.session !== sessionId.value || disconnected.value) return;
+  savingPassword.value = true;
+  try {
+    await sshPasswordDecision(request.token, request.operation, save);
+  } catch {
+    if (!disposed && passwordSave.value === request) {
+      error.value = save ? '未能保存 SSH 密码。当前会话可继续使用。' : '未能记录密码保存选择。当前会话可继续使用。';
+    }
+  } finally {
+    savingPassword.value = false;
+    if (!disposed && passwordSave.value === request) {
+      passwordSave.value = null;
+      await nextTick();
+      if (props.active && sessionId.value === request.session && !disconnected.value) terminalView.value?.activate();
+    }
+  }
+}
+
 async function forgetKey() { if (!selected.value || busy.value) return; busy.value = true; savingKey.value = true; const id = selected.value.id; try { await sshKeyDelete(id); keySaved.value = false; useSavedKey.value = false; } catch (e) { error.value = message(e); if (error.value.includes('结果未知')) { try { keySaved.value = await sshKeySaved(id); useSavedKey.value = keySaved.value; error.value += keySaved.value ? ' 当前仍有已保存私钥。' : ' 当前已无已保存私钥。'; } catch { error.value += ' 状态暂不可确认，请稍后重试。'; } } } finally { savingKey.value = false; busy.value = false; } }
-function cancelConnect() { if (savingKey.value && !disposed) return; openGeneration++; const operation = openingOperation; openingOperation = ""; if (operation) void sshCancel(operation).catch(() => {}); connectDialog.value = false; challenge.value = null; clearSecrets(); busy.value = false; }
+function cancelConnect() { if (savingKey.value && !disposed) return; openGeneration++; const operation = openingOperation; openingOperation = ""; if (operation) void sshCancel(operation).catch(() => {}); connectDialog.value = false; challenge.value = null; useSavedPassword.value = false; clearSecrets(); busy.value = false; }
 async function open(fingerprint?: string) {
   if (!selected.value || busy.value) return;
   const generation = ++openGeneration;
@@ -218,7 +256,17 @@ async function open(fingerprint?: string) {
   busy.value = true; error.value = "";
   try {
     if (selected.value.authentication === 'private_key' && saveKey.value && !useSavedKey.value) { savingKey.value = true; try { await sshKeySave(selected.value.id, privateKey.value, passphrase.value || null); } catch (e) { const detail = message(e); const operationId = detail.match(/操作标识：([A-Za-z0-9_-]+)/)?.[1]; if (!operationId) throw e; const status = await sshKeyOperationStatus(selected.value.id, operationId); if (!['committed', 'committed_cleanup_pending'].includes(status)) throw new Error(`密钥保存状态：${status}。请稍后检查，操作标识：${operationId}`); } finally { savingKey.value = false; } if (disposed || generation !== openGeneration || !selected.value) return; keySaved.value = true; saveKey.value = false; }
-    const result = await sshOpen(selected.value.id, selected.value.authentication === "password" ? password.value : null, operation, fingerprint, selected.value.authentication === "private_key" && !useSavedKey.value ? privateKey.value : null, selected.value.authentication === "private_key" && !useSavedKey.value ? passphrase.value : null, useSavedKey.value);
+    const input = selected.value;
+    const result = await sshOpen(
+      input.id,
+      input.authentication === 'password' && !useSavedPassword.value ? password.value : null,
+      operation,
+      fingerprint,
+      input.authentication === 'private_key' && !useSavedKey.value ? privateKey.value : null,
+      input.authentication === 'private_key' && !useSavedKey.value ? passphrase.value : null,
+      useSavedKey.value,
+      useSavedPassword.value,
+    );
     if (disposed || generation !== openGeneration) {
       if (result.status === "connected") void sessionClose(result.sessionId).catch(() => {});
       return;
@@ -226,11 +274,18 @@ async function open(fingerprint?: string) {
     if (result.status === "host_key_confirmation") { challenge.value = result; return; }
     clearSecrets(); challenge.value = null; connectDialog.value = false;
     sessionGeneration++; sessionId.value = result.sessionId; disconnected.value = false; closeUnknown.value = false;
+    if (result.passwordSaveToken) {
+      passwordSave.value = { token: result.passwordSaveToken, session: result.sessionId, operation: crypto.randomUUID() };
+    }
     emit('connected', { id: result.sessionId, profile: selected.value });
     await nextTick();
     if (selected.value?.production) terminalView.value?.write('$ ');
     else void poll(result.sessionId);
-  } catch (e) { if (!disposed && generation === openGeneration) { clearSecrets(); challenge.value = null; error.value = message(e); } }
+  } catch (e) {
+    if (!disposed && generation === openGeneration) {
+      clearSecrets(); challenge.value = null; useSavedPassword.value = false; error.value = message(e);
+    }
+  }
   finally { if (openingOperation === operation) openingOperation = ""; if (generation === openGeneration) busy.value = false; }
 }
 async function poll(id: string) {
@@ -401,7 +456,7 @@ onUnmounted(() => { disposed = true; sessionGeneration++; pastePending.value = '
       <template #terminal>
 <section v-if="sessionId" class="terminal-panel" aria-label="SSH 会话">
         <div class="terminal-heading"><div class="terminal-heading__title"><span class="connection-dot" :class="{ 'connection-dot--offline': disconnected }" aria-hidden="true"></span><strong>{{ selected?.name }}</strong><span v-if="selected?.production" class="production-badge">生产</span><span>{{ closeUnknown ? '关闭结果未知' : disconnected ? '已断开' : '已连接' }}</span></div><button type="button" :disabled="closing" @click="close">{{ closing ? '正在关闭' : closeUnknown ? '重试关闭' : '关闭会话' }}</button></div>
-        <TerminalView ref="terminalView" :active="active" :disabled="disconnected || busy || !!pending || !!savedPending || !!pastePending" @data="terminalInput" @paste="terminalPaste" @resize="resizeTerminal" />
+        <TerminalView ref="terminalView" :active="active" :disabled="disconnected || busy || !!passwordSave || !!pending || !!savedPending || !!pastePending" @data="terminalInput" @paste="terminalPaste" @resize="resizeTerminal" />
         <p v-if="!selected?.production && !selected?.alwaysConfirm" class="terminal-hint">在终端内直接输入；多行粘贴需要确认。</p>
         <p v-else-if="!selected?.production" class="terminal-hint">本连接启用命令确认，在终端内本地编辑整行；远程行编辑及 Tab 补全不可用。</p>
         <p v-else class="warning-box" role="status">生产连接每条命令独立执行，不保留工作目录和环境变量等 Shell 状态。命令结束后显示输出；不支持交互式程序、远程行编辑或 Tab 补全。执行期间可关闭会话以中断本地等待，但远端命令结果未知；超时或发生错误后需重新连接。</p>
@@ -426,7 +481,17 @@ onUnmounted(() => { disposed = true; sessionGeneration++; pastePending.value = '
     <div v-if="deleting" v-focus-dialog class="modal-backdrop" @click.self="!busy && (deleting = null)"><section class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-title"><h2 id="delete-title">删除连接</h2><p>确定删除连接“{{ deleting.name }}”？此操作不可撤销。</p><p v-if="error" class="inline-error" role="alert">{{ error }}</p><div class="dialog-actions"><button data-test="cancel-delete" type="button" :disabled="busy" @click="deleting = null">取消</button><button class="danger-button" data-test="confirm-delete" type="button" :disabled="busy" @click="remove">删除</button></div></section></div>
     <div v-if="connectDialog" v-focus-dialog class="modal-backdrop" @click.self="cancelConnect"><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="connect-title"><h2 id="connect-title">{{ challenge ? '确认服务器身份' : '连接服务器' }}</h2><p v-if="error" class="inline-error" role="alert">{{ error }}</p>
       <template v-if="challenge"><p>首次连接，请核对服务器指纹。确认前不会进行认证。</p><dl class="fingerprint"><dt>主机</dt><dd>{{ challenge.host }}:{{ challenge.port }}</dd><dt>算法</dt><dd>{{ challenge.algorithm }}</dd><dt>指纹</dt><dd>{{ challenge.fingerprint }}</dd></dl><div class="dialog-actions"><button data-test="reject-host" type="button" @click="cancelConnect">拒绝</button><button class="primary-button" type="button" :disabled="busy" @click="open(challenge.fingerprint)">接受并连接</button></div></template>
-      <template v-else><p>{{ selected?.username }}@{{ selected?.host }}:{{ selected?.port }} <span v-if="selected?.production" class="production-badge">生产</span></p><label v-if="selected?.authentication === 'password'">密码<input v-model="password" data-test="password" type="password" autocomplete="off" /></label><template v-if="selected?.authentication === 'private_key'"><label v-if="keySaved" class="check-label"><input v-model="useSavedKey" type="checkbox" data-test="use-saved-key" />使用已保存的私钥</label><button v-if="keySaved" type="button" :disabled="busy" @click="forgetKey">删除已保存私钥</button><template v-if="!useSavedKey"><label>OpenSSH 私钥<textarea v-model="privateKey" data-test="private-key" rows="5" autocomplete="off" spellcheck="false"></textarea></label><label>私钥口令（可选）<input v-model="passphrase" data-test="passphrase" type="password" autocomplete="off" /></label><label class="check-label"><input v-model="saveKey" data-test="save-key" type="checkbox" />安全保存私钥及口令到系统凭据存储</label></template></template><p class="muted">{{ savingKey ? "正在保存到系统凭据存储，请稍候。" : "未选择保存的密码、私钥和口令仅用于本次连接。" }}</p><div class="dialog-actions"><button type="button" :disabled="savingKey" @click="cancelConnect">取消</button><button class="primary-button" data-test="start-connect" type="button" :disabled="busy || (selected?.authentication === 'password' && !password) || (selected?.authentication === 'private_key' && !useSavedKey && !privateKey)" @click="open()">连接</button></div></template>
+      <template v-else><p>{{ selected?.username }}@{{ selected?.host }}:{{ selected?.port }} <span v-if="selected?.production" class="production-badge">生产</span></p><p v-if="useSavedPassword" role="status">正在使用已保存的密码连接…</p><label v-else-if="selected?.authentication === 'password'">密码<input v-model="password" data-test="password" type="password" autocomplete="off" /></label><template v-if="selected?.authentication === 'private_key'"><label v-if="keySaved" class="check-label"><input v-model="useSavedKey" type="checkbox" data-test="use-saved-key" />使用已保存的私钥</label><button v-if="keySaved" type="button" :disabled="busy" @click="forgetKey">删除已保存私钥</button><template v-if="!useSavedKey"><label>OpenSSH 私钥<textarea v-model="privateKey" data-test="private-key" rows="5" autocomplete="off" spellcheck="false"></textarea></label><label>私钥口令（可选）<input v-model="passphrase" data-test="passphrase" type="password" autocomplete="off" /></label><label class="check-label"><input v-model="saveKey" data-test="save-key" type="checkbox" />安全保存私钥及口令到系统凭据存储</label></template></template><p class="muted">{{ savingKey ? "正在保存到系统凭据存储，请稍候。" : "未选择保存的密码、私钥和口令仅用于本次连接。" }}</p><div class="dialog-actions"><button type="button" :disabled="savingKey" @click="cancelConnect">取消</button><button class="primary-button" data-test="start-connect" type="button" :disabled="busy || (selected?.authentication === 'password' && !useSavedPassword && !password) || (selected?.authentication === 'private_key' && !useSavedKey && !privateKey)" @click="open()">连接</button></div></template>
     </section></div>
+    <div v-if="passwordSave" v-focus-dialog="() => decidePasswordSave(false)" data-test="password-save-dialog" class="modal-backdrop" @click.self="decidePasswordSave(false)">
+      <section class="dialog" role="alertdialog" aria-modal="true" aria-label="保存 SSH 密码">
+        <h2>保存 SSH 密码？</h2>
+        <p>密码将保存到系统凭据存储，下次连接时无需输入。</p>
+        <div class="dialog-actions">
+          <button type="button" data-test="cancel-save-password" :disabled="savingPassword" @click="decidePasswordSave(false)">取消</button>
+          <button type="button" data-test="save-password" class="primary-button" :disabled="savingPassword" @click="decidePasswordSave(true)">保存密码</button>
+        </div>
+      </section>
+    </div>
   </section>
 </template>

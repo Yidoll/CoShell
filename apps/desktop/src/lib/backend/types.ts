@@ -37,7 +37,9 @@ export interface Backend {
   groupList(): Promise<ConnectionGroup[]>;
   groupSave(input: ConnectionGroup): Promise<void>;
   groupDelete(id: string): Promise<boolean>;
-  sshOpen(connectionId: string, password: string | null, operationId: string, acceptedFingerprint?: string, privateKey?: string | null, passphrase?: string | null, useSavedKey?: boolean): Promise<SshOpenResult>;
+  sshOpen(connectionId: string, password: string | null, operationId: string, acceptedFingerprint?: string, privateKey?: string | null, passphrase?: string | null, useSavedKey?: boolean, useSavedPassword?: boolean): Promise<SshOpenResult>;
+  sshPasswordState(connectionId: string): Promise<SshPasswordState>;
+  sshPasswordDecision(token: string, operationId: string, save: boolean): Promise<void>;
   sshKeySaved(connectionId: string): Promise<boolean>;
   sshKeySave(connectionId: string, privateKey: string, passphrase: string | null): Promise<void>;
   sshKeyDelete(connectionId: string): Promise<void>;
@@ -47,7 +49,8 @@ export interface Backend {
   webdavTestCancel(operationId: string): Promise<void>;
   webdavAutoGet(): Promise<[number | null, string]>;
   webdavAutoSet(intervalMinutes: number | null, acceptPlaintext: boolean): Promise<void>;
-  webdavSaveConfig(input: DavConfig, password: string | null, operationId: string): Promise<void>;
+  webdavSaveConfig(input: DavConfig, password: string | null, operationId: string): Promise<DavConfig>;
+  webdavConfigSaveStatus(operationId: string): Promise<DavConfigSaveStatus>;
   webdavSync(passphrase: string, operationId: string): Promise<string>;
   webdavReconcile(operationId: string): Promise<string>;
   webdavSyncStatus(operationId: string): Promise<{state:string;error:string|null;cleanupPending:boolean;possibleObjects:string[]}|null>;
@@ -70,7 +73,8 @@ export interface Backend {
 export interface SavedCommand { id:string; name:string; content:string; category:string; version:number }
 export interface RemoteFileEntry { name:string; kind:'directory'|'file'|'symlink'|'unknown'; size:number|null; permissions:number|null; modified:number|null }
 export type RemoteFileMutation = {action:'mkdir'|'create';path:string}|{action:'remove';path:string;directory:boolean}|{action:'rename';path:string;destination:string}|{action:'chmod';path:string;mode:number}|{action:'write';path:string;data:number[];overwrite:boolean;expectedDigest?:string|null};
-export interface DavConfig { url: string; remoteDirectory: string; username: string; hasCredential: boolean }
+export interface DavConfig { url: string; remoteDirectory: string; username: string; hasCredential: boolean; cleanupPending?: boolean }
+export type DavConfigSaveStatus = 'not_found' | 'pending' | 'aborted' | 'aborted_retained_runs' | 'committed' | 'committed_cleanup_pending';
 export interface DavVersion { id: string; timestamp: string | null; latest: boolean }
 export interface DavVersionPage { versions: DavVersion[]; nextCursor: string | null }
 export type DavSnapshotState = 'structurally_complete' | 'missing_manifest' | 'invalid_manifest' | 'unsupported_format' | 'incomplete' | 'missing_connections' | 'missing_credentials' | 'integrity_mismatch' | 'unavailable' | 'legacy' | 'legacy_unconfirmed';
@@ -81,7 +85,8 @@ export interface DavGroup { id: string; name: string; parent_id: string | null }
 export interface DavPreview { token: string; snapshotId?:string|null; manifestSha256?:string|null; protection: 'none'|'encrypted'; connections: { id: string; name: string; status: 'new' | 'unchanged' | 'conflict'; backup: DavConnection; local: DavConnection | null; backupHasSecret:boolean; localHasSecret:boolean }[]; groups: { id: string; status: 'new' | 'unchanged' | 'conflict'; backup: DavGroup; local: DavGroup | null }[]; hostKeyCount: number }
 export interface DavChoice { id: string; action: 'keep' | 'replace' | 'copy'; copyId?: string; copyName?: string }
 
-export type SshOpenResult = { status: "connected"; sessionId: string } | ({ status: "host_key_confirmation" } & HostKeyChallenge);
+export type SshPasswordState = 'available' | 'missing' | 'unavailable';
+export type SshOpenResult = { status: "connected"; sessionId: string; passwordSaveToken?: string } | ({ status: "host_key_confirmation" } & HostKeyChallenge);
 export interface SessionReadResult { output: string; closed: boolean }
 export type SessionSubmitResult = { status: "sent" } | { status: "confirmation_required"; token: string; risk: RiskLevel; categories: string[] };
 

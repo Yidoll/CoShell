@@ -77,6 +77,14 @@ impl ConnectionService {
                 if version != record.version || version >= 9_007_199_254_740_991 {
                     return Err(error("CONNECTION_CONFLICT"));
                 }
+                let unchanged: bool = tx.query_row(
+                    "SELECT host=?2 AND port=?3 AND username=?4 AND authentication=?5 FROM connections WHERE id=?1",
+                    params![record.id,record.host,record.port,record.username,record.authentication],
+                    |r| r.get(0),
+                ).map_err(write_error)?;
+                if !unchanged {
+                    crate::ssh_password_store::retire(&tx, &record.id).map_err(write_error)?;
+                }
                 tx.execute("UPDATE connections SET name=?1,host=?2,port=?3,username=?4,authentication=?5,group_id=?6,notes=?7,production=?8,always_confirm=?9,version=version+1 WHERE id=?10 AND version=?11",params![record.name,record.host,record.port,record.username,record.authentication,record.group_id,record.notes,record.production,record.always_confirm,record.id,record.version]).map_err(write_error)?;
             }
         }
@@ -106,6 +114,28 @@ impl ConnectionService {
                 write_error(e)
             }
         })
+    }
+    pub(crate) fn delete_with_password_cleanup(&self, id: &str) -> Result<bool, ErrorEnvelope> {
+        self.check()?;
+        let mut db = self.db.lock().map_err(|_| error("CONNECTION_STORAGE"))?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(write_error)?;
+        let has_other_secrets: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM connection_secret_refs WHERE connection_id=?1 AND secret_type<>'password')",
+            [id],
+            |r| r.get(0),
+        ).map_err(write_error)?;
+        if has_other_secrets {
+            return Err(error("CONNECTION_HAS_SECRETS"));
+        }
+        crate::ssh_password_store::retire(&tx, id).map_err(write_error)?;
+        let removed = tx
+            .execute("DELETE FROM connections WHERE id=?1", [id])
+            .map_err(write_error)?
+            != 0;
+        tx.commit().map_err(write_error)?;
+        Ok(removed)
     }
     pub fn save_group(&self, group: &GroupRecord) -> Result<(), ErrorEnvelope> {
         self.check()?;

@@ -32,7 +32,18 @@ export function connectionDelete(id: string) { return invokeCommand<boolean>("co
 export function groupList() { return invokeCommand<ConnectionGroup[]>("group_list"); }
 export function groupSave(input: ConnectionGroup) { return invokeCommand<void>("group_save", { input }); }
 export function groupDelete(id: string) { return invokeCommand<boolean>("group_delete", { id }); }
-export function sshOpen(connectionId: string, password: string | null, operationId: string, acceptedFingerprint?: string, privateKey?: string | null, passphrase?: string | null, useSavedKey = false) { return invokeCommand<SshOpenResult>("ssh_open", { connectionId, password, operationId, acceptedFingerprint: acceptedFingerprint ?? null, privateKey: privateKey ?? null, passphrase: passphrase ?? null, useSavedKey }); }
+export function sshOpen(connectionId: string, password: string | null, operationId: string, acceptedFingerprint?: string, privateKey?: string | null, passphrase?: string | null, useSavedKey = false, useSavedPassword = false) {
+  return invokeCommand<SshOpenResult>("ssh_open", {
+    connectionId, password, operationId, acceptedFingerprint: acceptedFingerprint ?? null,
+    privateKey: privateKey ?? null, passphrase: passphrase ?? null, useSavedKey, useSavedPassword,
+  });
+}
+export function sshPasswordState(connectionId: string) {
+  return invokeCommand<import('./types').SshPasswordState>('ssh_password_state', { connectionId });
+}
+export function sshPasswordDecision(token: string, operationId: string, save: boolean) {
+  return invokeCommand<void>('ssh_password_decision', { token, operationId, save });
+}
 export function sshKeySaved(connectionId: string) { return invokeCommand<boolean>('ssh_key_saved', { connectionId }); }
 export function sshKeySave(connectionId: string, privateKey: string, passphrase: string | null) { return invokeCommand<void>('ssh_key_save', { connectionId, privateKey, passphrase }); }
 export function sshKeyDelete(connectionId: string) { return invokeCommand<void>('ssh_key_delete', { connectionId }); }
@@ -42,7 +53,8 @@ export function webdavTestConfig(operationId: string) { return invokeCommand<str
 export function webdavTestCancel(operationId: string) { return invokeCommand<void>('webdav_test_cancel', { operationId }); }
 export function webdavAutoGet() { return invokeCommand<[number | null, string]>('webdav_auto_get'); }
 export function webdavAutoSet(intervalMinutes: number | null, acceptPlaintext: boolean) { return invokeCommand<void>('webdav_auto_set', { intervalMinutes, acceptPlaintext }); }
-export function webdavSaveConfig(input: import('./types').DavConfig, password: string | null, operationId: string) { return invokeCommand<void>('webdav_save_config', { input, password, operationId }); }
+export function webdavSaveConfig(input: import('./types').DavConfig, password: string | null, operationId: string) { return invokeCommand<import('./types').DavConfig>('webdav_save_config', { input, password, operationId }); }
+export function webdavConfigSaveStatus(operationId: string) { return invokeCommand<import('./types').DavConfigSaveStatus>('webdav_config_save_status', { operationId }); }
 export function webdavSync(passphrase: string, operationId: string) { return invokeCommand<string>('webdav_sync', { passphrase, operationId }); }
 export function webdavReconcile(operationId:string){return invokeCommand<string>('webdav_reconcile',{operationId});}
 export function webdavSyncStatus(operationId: string) { return invokeCommand<{state:string;error:string|null;cleanupPending:boolean;possibleObjects:string[]}|null>('webdav_sync_status', { operationId }); }

@@ -15,6 +15,7 @@ const backend = vi.hoisted(() => ({
   groupDelete: vi.fn(),
   sessionRead: vi.fn(), sessionSubmit: vi.fn(), sessionClose: vi.fn(), sessionWrite: vi.fn(), sessionResize: vi.fn(),
   serverOverview: vi.fn(), serverOverviewCancel: vi.fn(),
+  sshPasswordState: vi.fn(), sshPasswordDecision: vi.fn(),
   sshKeySaved: vi.fn(), sshKeySave: vi.fn(), sshKeyDelete: vi.fn(), sshKeyOperationStatus: vi.fn(),
   remoteRealpath:vi.fn(),remoteList:vi.fn(),remoteStat:vi.fn(),remoteRead:vi.fn(),remotePrepare:vi.fn(),remoteConfirm:vi.fn(),remoteCommit:vi.fn(),remoteCancel:vi.fn(),
   savedCommandList:vi.fn(),savedCommandSave:vi.fn(),savedCommandDelete:vi.fn(),sessionRunSaved:vi.fn(),
@@ -35,10 +36,137 @@ describe("连接管理", () => {
     backend.sessionClose.mockResolvedValue(undefined);
     backend.sessionWrite.mockResolvedValue(undefined); backend.sessionResize.mockResolvedValue(undefined);
     backend.sshCancel.mockResolvedValue(undefined);
+    backend.sshPasswordState.mockResolvedValue("missing");
+    backend.sshPasswordDecision.mockResolvedValue(undefined);
     backend.sshKeySaved.mockResolvedValue(false); backend.sshKeySave.mockResolvedValue(undefined); backend.sshKeyDelete.mockResolvedValue(undefined);
     backend.serverOverview.mockRejectedValue("不可用");
     backend.serverOverviewCancel.mockResolvedValue(undefined);
     backend.remoteRealpath.mockResolvedValue('/root');backend.remoteList.mockResolvedValue([]);backend.remoteCancel.mockResolvedValue(undefined);backend.savedCommandList.mockResolvedValue([]);
+  });
+
+  async function manualPasswordConnect(wrapper: ReturnType<typeof mount>, secret: string) {
+    await wrapper.get("[data-test=password]").setValue(secret);
+    await wrapper.get("[data-test=start-connect]").trigger("click");
+    await flushPromises();
+  }
+
+  it("首次认证成功后只用令牌确认保存，重新打开会话时自动使用已存密码", async () => {
+    backend.sshOpen.mockResolvedValueOnce({ status: "connected", sessionId: "s1", passwordSaveToken: "first-token" });
+    const wrapper = mount(ConnectionsPage);
+    await flushPromises();
+    await wrapper.get("[data-test=connect]").trigger("click");
+    expect(wrapper.find("[data-test=password-save-dialog]").exists()).toBe(false);
+    await manualPasswordConnect(wrapper, "temporary");
+    expect(wrapper.find("[data-test=password]").exists()).toBe(false);
+    expect(backend.sshPasswordDecision).not.toHaveBeenCalled();
+    await wrapper.get("[data-test=save-password]").trigger("click");
+    await flushPromises();
+    expect(backend.sshPasswordDecision).toHaveBeenCalledWith("first-token", expect.any(String), true);
+    expect(wrapper.find("[data-test=password-save-dialog]").exists()).toBe(false);
+    wrapper.unmount();
+
+    backend.sshPasswordState.mockResolvedValueOnce("available");
+    backend.sshOpen.mockResolvedValueOnce({ status: "connected", sessionId: "s2" });
+    const next = mount(ConnectionsPage);
+    await flushPromises();
+    await next.get("[data-test=connect]").trigger("click");
+    await flushPromises();
+    expect(backend.sshOpen).toHaveBeenLastCalledWith("c1", null, expect.any(String), undefined, null, null, false, true);
+    expect(next.find("[data-test=password]").exists()).toBe(false);
+    expect(next.find("[data-test=password-save-dialog]").exists()).toBe(false);
+    next.unmount();
+  });
+
+  it("关闭密码保存提示只放弃保存，之后仍可手动连接", async () => {
+    backend.sshOpen.mockResolvedValueOnce({ status: "connected", sessionId: "s1", passwordSaveToken: "decline-token" });
+    const wrapper = mount(ConnectionsPage);
+    await flushPromises();
+    await wrapper.get("[data-test=connect]").trigger("click");
+    await manualPasswordConnect(wrapper, "temporary");
+    await wrapper.get("[data-test=password-save-dialog]").trigger("keydown", { key: "Escape" });
+    await flushPromises();
+    expect(backend.sshPasswordDecision).toHaveBeenCalledWith("decline-token", expect.any(String), false);
+    expect(backend.sessionClose).not.toHaveBeenCalled();
+    expect(wrapper.find("[data-test=password-save-dialog]").exists()).toBe(false);
+    wrapper.unmount();
+
+    backend.sshOpen.mockResolvedValueOnce({ status: "connected", sessionId: "s2" });
+    const next = mount(ConnectionsPage);
+    await flushPromises();
+    await next.get("[data-test=connect]").trigger("click");
+    await manualPasswordConnect(next, "temporary");
+    expect(next.find("[data-test=password-save-dialog]").exists()).toBe(false);
+    next.unmount();
+  });
+
+  it("保存的密码仍需等待首次主机指纹确认", async () => {
+    backend.sshPasswordState.mockResolvedValueOnce("available");
+    backend.sshOpen
+      .mockResolvedValueOnce({ status: "host_key_confirmation", host: "example.org", port: 22, algorithm: "ssh-ed25519", fingerprint: "SHA256:test" })
+      .mockResolvedValueOnce({ status: "connected", sessionId: "s1" });
+    const wrapper = mount(ConnectionsPage);
+    await flushPromises();
+    await wrapper.get("[data-test=connect]").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("SHA256:test");
+    expect(backend.sshOpen).toHaveBeenCalledTimes(1);
+    expect(wrapper.find("[data-test=password]").exists()).toBe(false);
+    const confirm = wrapper.get('[aria-labelledby=connect-title]').findAll('button').find(button => button.text() === '接受并连接');
+    await confirm!.trigger("click");
+    await flushPromises();
+    expect(backend.sshOpen).toHaveBeenLastCalledWith("c1", null, expect.any(String), "SHA256:test", null, null, false, true);
+    expect(wrapper.find("[data-test=password-save-dialog]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("取消密码连接后忽略迟到的已保存状态", async () => {
+    let finish!: (state: 'available') => void;
+    backend.sshPasswordState.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const wrapper = mount(ConnectionsPage);
+    await flushPromises();
+    await wrapper.get("[data-test=connect]").trigger("click");
+    await wrapper.get(".modal-backdrop").trigger("keydown", { key: "Escape" });
+    finish("available");
+    await flushPromises();
+    expect(backend.sshOpen).not.toHaveBeenCalled();
+    expect(wrapper.find("[data-test=password]").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("已保存密码被拒绝后提供手动输入且不自动重试", async () => {
+    backend.sshPasswordState.mockResolvedValueOnce("available");
+    backend.sshOpen.mockRejectedValueOnce("SSH_SAVED_PASSWORD_REJECTED");
+    const wrapper = mount(ConnectionsPage);
+    await flushPromises();
+    await wrapper.get("[data-test=connect]").trigger("click");
+    await flushPromises();
+    expect(backend.sshOpen).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("服务器拒绝了已保存的密码");
+    expect(wrapper.find("[data-test=password-save-dialog]").exists()).toBe(false);
+    backend.sshOpen.mockResolvedValueOnce({ status: "connected", sessionId: "s1", passwordSaveToken: "replacement" });
+    await manualPasswordConnect(wrapper, "replacement-password");
+    expect(backend.sshOpen).toHaveBeenLastCalledWith("c1", "replacement-password", expect.any(String), undefined, null, null, false, false);
+    expect(wrapper.find("[data-test=password-save-dialog]").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("系统凭据不可用时可以手输，保存失败时保留当前会话", async () => {
+    backend.sshPasswordState.mockResolvedValueOnce("unavailable");
+    backend.sshOpen.mockResolvedValueOnce({ status: "connected", sessionId: "s1", passwordSaveToken: "save-failure" });
+    backend.sshPasswordDecision.mockRejectedValueOnce("store failure");
+    const wrapper = mount(ConnectionsPage);
+    await flushPromises();
+    await wrapper.get("[data-test=connect]").trigger("click");
+    await flushPromises();
+    expect(backend.sshOpen).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("已保存的密码不可用");
+    await manualPasswordConnect(wrapper, "temporary");
+    await wrapper.get("[data-test=save-password]").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("未能保存 SSH 密码");
+    expect(backend.sessionClose).not.toHaveBeenCalled();
+    expect(wrapper.find("[data-test=password-save-dialog]").exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it('连接工作台按连接侧栏、终端、文件夹和命令侧栏组织', async () => {
@@ -555,7 +683,7 @@ describe("连接管理", () => {
     await wrapper.get("[data-test=private-key]").setValue("test-private-key-material");
     await wrapper.get("[data-test=passphrase]").setValue("test-private-passphrase");
     await wrapper.get("[data-test=start-connect]").trigger("click"); await flushPromises();
-    expect(backend.sshOpen).toHaveBeenCalledWith("c1", null, expect.any(String), undefined, "test-private-key-material", "test-private-passphrase", false);
+    expect(backend.sshOpen).toHaveBeenCalledWith("c1", null, expect.any(String), undefined, "test-private-key-material", "test-private-passphrase", false, false);
     expect(wrapper.html()).not.toContain("test-private-key-material");
     expect(wrapper.html()).not.toContain("test-private-passphrase");
     wrapper.unmount();
@@ -578,7 +706,7 @@ describe("连接管理", () => {
     await next.get('[data-test=connect]').trigger('click'); await flushPromises();
     expect(next.find('[data-test=private-key]').exists()).toBe(false);
     await next.get('[data-test=start-connect]').trigger('click'); await flushPromises();
-    expect(backend.sshOpen).toHaveBeenLastCalledWith('c1', null, expect.any(String), undefined, null, null, true);
+    expect(backend.sshOpen).toHaveBeenLastCalledWith('c1', null, expect.any(String), undefined, null, null, true, false);
     next.unmount();
   });
 });

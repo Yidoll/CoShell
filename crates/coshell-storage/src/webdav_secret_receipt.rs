@@ -78,10 +78,36 @@ impl WebDavSecretReceiptRepository<'_> {
         Ok(receipt)
     }
     pub fn commit(&mut self, op: &str) -> Result<()> {
+        self.commit_inner(op, None)
+    }
+
+    /// Publish validated metadata together with its new credential reference.
+    /// The fields live in the caller until commit. Recovery of a staged
+    /// attempt aborts it and never publishes metadata or a reference.
+    pub fn commit_profile(
+        &mut self,
+        op: &str,
+        profile: &str,
+        url: &str,
+        directory: &str,
+        username: &str,
+        auto: bool,
+    ) -> Result<()> {
+        self.commit_inner(op, Some((profile, url, directory, username, auto)))
+    }
+
+    fn commit_inner(
+        &mut self,
+        op: &str,
+        profile: Option<(&str, &str, &str, &str, bool)>,
+    ) -> Result<()> {
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let r = get(&tx, op)?.ok_or(rusqlite::Error::InvalidQuery)?;
+        if profile.is_some_and(|(id, _, _, _, _)| id != r.connection_id) {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
         if r.state == ReceiptState::Committed {
             tx.commit()?;
             return Ok(());
@@ -106,10 +132,17 @@ impl WebDavSecretReceiptRepository<'_> {
             "DELETE FROM webdav_provisional_profiles WHERE operation_id=?1",
             [op],
         )?;
-        tx.execute(
-            "UPDATE webdav_profiles SET credential_secret_id=?1 WHERE id=?2",
-            params![r.secret_id, r.connection_id],
-        )?;
+        if let Some((id, url, directory, username, auto)) = profile {
+            tx.execute(
+                "UPDATE webdav_profiles SET credential_secret_id=?1,url=?2,remote_directory=?3,username=?4,auto_backup=?5 WHERE id=?6",
+                params![r.secret_id, url, directory, username, auto, id],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE webdav_profiles SET credential_secret_id=?1 WHERE id=?2",
+                params![r.secret_id, r.connection_id],
+            )?;
+        }
         if let Some(ref old) = old {
             tx.execute("INSERT INTO webdav_secret_journal(operation_id,profile_id,secret_id,kind) VALUES (?1,?2,?3,'cleanup')",params![op,r.connection_id,old])?;
         }

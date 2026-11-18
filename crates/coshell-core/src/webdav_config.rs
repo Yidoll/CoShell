@@ -133,8 +133,8 @@ pub fn get_profile(
     db.query_row("SELECT id,url,remote_directory,username,auto_backup FROM active_webdav_profiles WHERE id=?1",[id],|r|Ok(WebDavProfile{id:r.get(0)?,url:r.get(1)?,remote_directory:r.get(2)?,username:r.get(3)?,auto_backup:r.get(4)?})).optional().map_err(|_|ConfigError::Storage)
 }
 
-/// The credential is never returned or stored in SQLite. A profile whose URL
-/// or username changes must first be recreated without reusing its credential.
+/// Store the password in the system credential store. Updating its target
+/// requires a replacement password and publishes the target and reference together.
 pub fn save_profile(
     path: &Path,
     store: &impl SecretStore,
@@ -154,6 +154,7 @@ pub fn save_profile(
     {
         return Err(ConfigError::InvalidInput);
     }
+    let credential = credential.filter(|(_, secret)| !secret.expose().is_empty());
     if let Some((operation, _)) = credential {
         if operation.is_empty()
             || operation.len() > 128
@@ -188,38 +189,27 @@ pub fn save_profile(
             return Err(ConfigError::Credential(CoordinatorError::OperationConflict));
         }
     }
-    let existing: Option<(String, String, String, bool, Option<String>)> = tx
+    let existing: Option<(String, String, bool)> = tx
         .query_row(
-            "SELECT url,username,remote_directory,auto_backup,credential_secret_id FROM webdav_profiles WHERE id=?1",
+            "SELECT url,username,credential_secret_id IS NOT NULL FROM webdav_profiles WHERE id=?1",
             [&profile.id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(|_| ConfigError::Storage)?;
-    if existing.as_ref().is_some_and(|(url, username, _, _, id)| {
-        id.is_some() && (url != &profile.url || username != &profile.username)
-    }) {
-        return Err(ConfigError::CredentialTargetChanged);
-    }
-    // Metadata and credential publication use separate transactions. Do not
-    // let a failed credential write silently apply unrelated settings changes.
-    if credential.is_some()
+    if credential.is_none()
         && existing
             .as_ref()
-            .is_some_and(|(url, username, directory, auto, _)| {
-                url != &profile.url
-                    || username != &profile.username
-                    || directory != &profile.remote_directory
-                    || *auto != profile.auto_backup
+            .is_some_and(|(url, username, has_credential)| {
+                *has_credential && (url != &profile.url || username != &profile.username)
             })
     {
-        return Err(ConfigError::InvalidInput);
+        return Err(ConfigError::CredentialTargetChanged);
     }
     if credential.is_some() && existing.is_none() && profile.auto_backup {
         return Err(ConfigError::InvalidInput);
     }
-    let new_profile = existing.is_none();
-    if !(new_profile && credential.is_some()) {
+    if credential.is_none() {
         tx.execute("INSERT INTO webdav_profiles(id,url,remote_directory,username,auto_backup) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET url=excluded.url,remote_directory=excluded.remote_directory,username=excluded.username,auto_backup=excluded.auto_backup",params![profile.id,profile.url,profile.remote_directory,profile.username,profile.auto_backup]).map_err(|_|ConfigError::Storage)?;
     }
     tx.commit().map_err(|_| ConfigError::Storage)?;
@@ -229,8 +219,8 @@ pub fn save_profile(
             Arc::new(WebDavSqliteJournal::new(db, &lock).map_err(|_| ConfigError::Storage)?);
         let coordinator =
             SecretCoordinator::new(journal, store, &lock).map_err(ConfigError::Credential)?;
-        let result = if new_profile {
-            coordinator.create_webdav_profile(
+        let result = coordinator
+            .save_webdav_profile(
                 operation,
                 &NewWebDavProfile {
                     id: &profile.id,
@@ -239,12 +229,10 @@ pub fn save_profile(
                     username: &profile.username,
                     auto_backup: profile.auto_backup,
                 },
+                existing.is_none(),
                 secret,
             )
-        } else {
-            coordinator.replace_idempotent(operation, &profile.id, "webdav_password", secret)
-        }
-        .map_err(ConfigError::Credential)?;
+            .map_err(ConfigError::Credential)?;
         cleanup_pending = result.outcome == ReplaceOutcome::CommittedCleanupPending;
     }
     Ok(SavedProfile {

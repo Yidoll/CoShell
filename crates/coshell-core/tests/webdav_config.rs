@@ -248,3 +248,113 @@ fn profile_validation_and_credential_storage_are_safe() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn replacement_can_update_username_and_directory_in_one_save() {
+    let dir = std::env::temp_dir().join(format!(
+        "coshell-webdav-replace-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("db.sqlite");
+    let mut db = rusqlite::Connection::open(&path).unwrap();
+    coshell_storage::migrate(&mut db).unwrap();
+    let flags = FeatureFlags::default().with_enabled(Feature::WebDavBackup);
+    let store = Store::default();
+    let mut profile = WebDavProfile {
+        id: "profile".into(),
+        url: "https://example.org/".into(),
+        remote_directory: "old".into(),
+        username: "alice".into(),
+        auto_backup: false,
+    };
+    let old_password = Secret::new(b"alice-password".to_vec());
+    let new_password = Secret::new(b"bob-password".to_vec());
+    save_profile(
+        &path,
+        &store,
+        &flags,
+        &profile,
+        Some(("create", &old_password)),
+    )
+    .unwrap();
+    let active_id = || -> String {
+        db.query_row(
+            "SELECT credential_secret_id FROM active_webdav_profiles WHERE id='profile'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let alice_id = active_id();
+    let alice_profile = profile.clone();
+    profile.username = "bob".into();
+    profile.remote_directory = "new".into();
+    assert_eq!(
+        save_profile(&path, &store, &flags, &profile, None),
+        Err(ConfigError::CredentialTargetChanged)
+    );
+    assert_eq!(
+        get_profile(&path, &flags, "profile").unwrap(),
+        Some(alice_profile)
+    );
+    assert_eq!(active_id(), alice_id);
+    assert_eq!(
+        save_profile(
+            &path,
+            &store,
+            &flags,
+            &profile,
+            Some(("empty", &Secret::new(Vec::new()))),
+        ),
+        Err(ConfigError::CredentialTargetChanged)
+    );
+    assert_eq!(active_id(), alice_id);
+    save_profile(
+        &path,
+        &store,
+        &flags,
+        &profile,
+        Some(("replace", &new_password)),
+    )
+    .unwrap();
+    let bob_id = active_id();
+    assert_ne!(bob_id, alice_id);
+    assert!(store.get(&alice_id).unwrap().is_none());
+    assert_eq!(
+        store.get(&bob_id).unwrap().unwrap().expose(),
+        b"bob-password"
+    );
+    assert_eq!(
+        get_profile(&path, &flags, "profile").unwrap(),
+        Some(profile.clone())
+    );
+
+    profile.remote_directory = "only-directory".into();
+    save_profile(&path, &store, &flags, &profile, None).unwrap();
+    assert_eq!(
+        get_profile(&path, &flags, "profile").unwrap(),
+        Some(profile.clone())
+    );
+    assert_eq!(active_id(), bob_id);
+
+    save_profile(
+        &path,
+        &store,
+        &flags,
+        &profile,
+        Some(("rotate", &old_password)),
+    )
+    .unwrap();
+    assert_ne!(active_id(), bob_id);
+    assert_eq!(
+        store.get(&active_id()).unwrap().unwrap().expose(),
+        b"alice-password"
+    );
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -184,6 +184,13 @@ pub trait Journal: Send + Sync {
     fn commit_receipt(&self, _operation: &str) -> Result<(), ()> {
         Err(())
     }
+    fn commit_webdav_profile(
+        &self,
+        _operation: &str,
+        _profile: &NewWebDavProfile<'_>,
+    ) -> Result<(), ()> {
+        Err(())
+    }
     fn prepare_new_webdav(
         &self,
         _operation: &str,
@@ -426,6 +433,19 @@ impl Journal for WebDavSqliteJournal<'_> {
             .commit(op)
             .map_err(|_| ())
     }
+    fn commit_webdav_profile(&self, op: &str, profile: &NewWebDavProfile<'_>) -> Result<(), ()> {
+        let mut db = self.0.db.lock().map_err(|_| ())?;
+        coshell_storage::webdav_secret_receipt::WebDavSecretReceiptRepository(&mut db)
+            .commit_profile(
+                op,
+                profile.id,
+                profile.url,
+                profile.directory,
+                profile.username,
+                profile.auto_backup,
+            )
+            .map_err(|_| ())
+    }
     fn prepare_new_webdav(
         &self,
         op: &str,
@@ -487,10 +507,11 @@ impl<'a, J: Journal> SecretCoordinator<'a, J> {
         self.replace_inner(operation, connection, kind, secret, None)
     }
 
-    pub fn create_webdav_profile(
+    pub fn save_webdav_profile(
         &self,
         operation: &str,
         profile: &NewWebDavProfile<'_>,
+        create: bool,
         secret: &Secret,
     ) -> Result<ReplaceResult, CoordinatorError> {
         self.replace_inner(
@@ -498,7 +519,7 @@ impl<'a, J: Journal> SecretCoordinator<'a, J> {
             profile.id,
             "webdav_password",
             secret,
-            Some(profile),
+            Some((profile, create)),
         )
     }
 
@@ -508,7 +529,7 @@ impl<'a, J: Journal> SecretCoordinator<'a, J> {
         connection: &str,
         kind: &str,
         secret: &Secret,
-        new_profile: Option<&NewWebDavProfile<'_>>,
+        webdav_profile: Option<(&NewWebDavProfile<'_>, bool)>,
     ) -> Result<ReplaceResult, CoordinatorError> {
         if operation.is_empty()
             || operation.len() > 128
@@ -537,9 +558,9 @@ impl<'a, J: Journal> SecretCoordinator<'a, J> {
             return Err(CoordinatorError::OperationConflict);
         }
         let id = random_id()?;
-        let receipt = match new_profile {
-            Some(profile) => self.journal.prepare_new_webdav(operation, profile, &id),
-            None => self
+        let receipt = match webdav_profile {
+            Some((profile, true)) => self.journal.prepare_new_webdav(operation, profile, &id),
+            _ => self
                 .journal
                 .prepare_receipt(operation, connection, kind, &id),
         }
@@ -554,7 +575,11 @@ impl<'a, J: Journal> SecretCoordinator<'a, J> {
                 Err(_) => Err(CoordinatorError::CleanupPending),
             };
         }
-        if self.journal.commit_receipt(operation).is_err() {
+        let commit = match webdav_profile {
+            Some((profile, _)) => self.journal.commit_webdav_profile(operation, profile),
+            None => self.journal.commit_receipt(operation),
+        };
+        if commit.is_err() {
             return match self.journal.receipt(operation) {
                 Ok(Some(receipt)) => match receipt.status {
                     OperationStatus::Committed(result) => Ok(result),

@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -42,7 +43,43 @@ jobs:
         run: cargo check --locked --workspace --exclude coshell-desktop
       - run: cargo test --locked --workspace --exclude coshell-desktop
 
+  release-version:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify release tag and application versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { parse } from 'smol-toml';
+          const read = (path) => readFileSync(path, 'utf8');
+          const tag = process.env.RELEASE_TAG;
+          if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)) {
+            throw new Error(`Invalid release tag: ${tag}`);
+          }
+          const versions = {
+            'Cargo.toml': parse(read('Cargo.toml')).workspace.package.version,
+            'package.json': JSON.parse(read('package.json')).version,
+            'apps/desktop/package.json': JSON.parse(read('apps/desktop/package.json')).version,
+            'src-tauri/tauri.conf.json': JSON.parse(read('src-tauri/tauri.conf.json')).version,
+          };
+          for (const [path, version] of Object.entries(versions)) {
+            if (`v${version}` !== tag) throw new Error(`${path}: ${version} does not match ${tag}`);
+          }
+          JS
+
   desktop-bundle:
+    needs: release-version
+    if: ${{ !cancelled() && (needs.release-version.result == 'success' || needs.release-version.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -50,12 +87,18 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis
-          - os: macos-15
+            asset: windows-x64
+            extension: exe
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             bundles: app,dmg
+            asset: macos-x64
+            extension: dmg
           - os: macos-15
             target: aarch64-apple-darwin
             bundles: app,dmg
+            asset: macos-arm64
+            extension: dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -70,10 +113,60 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: pnpm install --frozen-lockfile
-      # Unsigned CI artifacts; release signing and notarization require secrets.
       - run: pnpm exec tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+      - name: Collect installer
+        shell: pwsh
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          ASSET_PLATFORM: ${{ matrix.asset }}
+          ASSET_EXTENSION: ${{ matrix.extension }}
+        run: |
+          $bundle = "target/$env:BUILD_TARGET/release/bundle"
+          $installer = @(Get-ChildItem -LiteralPath $bundle -Recurse -File -Filter "*.$env:ASSET_EXTENSION")
+          if ($installer.Count -ne 1) { throw "Expected one installer in $bundle, found $($installer.Count)" }
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Path release-assets | Out-Null
+          Copy-Item -LiteralPath $installer[0].FullName -Destination "release-assets/CoShell_${version}_$env:ASSET_PLATFORM.$env:ASSET_EXTENSION"
       - uses: actions/upload-artifact@v4
         with:
-          name: coshell-${{ matrix.target }}-unsigned
-          path: target/${{ matrix.target }}/release/bundle/
+          name: installer-${{ matrix.asset }}
+          path: release-assets/
           if-no-files-found: error
+
+  release-draft:
+    if: github.ref_type == 'tag'
+    needs: [frontend, rust, desktop-bundle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-draft-${{ github.ref }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installer-*
+          merge-multiple: true
+          path: release-assets
+      - name: Create GitHub Release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: release-assets
+        run: |
+          version="${RELEASE_TAG#v}"
+          installers=("CoShell_${version}_windows-x64.exe" "CoShell_${version}_macos-x64.dmg" "CoShell_${version}_macos-arm64.dmg")
+          sha256sum "${installers[@]}" > SHA256SUMS.txt
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft'); then
+            if [[ "$draft" != true ]]; then
+              echo 'Release is already published. Keeping its assets.'
+              exit 0
+            fi
+            gh release upload "$RELEASE_TAG" "${installers[@]}" SHA256SUMS.txt --clobber
+          else
+            gh release create "$RELEASE_TAG" "${installers[@]}" SHA256SUMS.txt \
+              --verify-tag --draft --title "CoShell $version" \
+              --notes '包含 Windows x64 NSIS 安装包，以及 macOS Intel 和 Apple Silicon DMG。Windows 包未签名，macOS 包使用临时签名且未公证。请完成安装验收后发布。'
+          fi

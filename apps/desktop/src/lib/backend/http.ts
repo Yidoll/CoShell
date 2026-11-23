@@ -1,3 +1,4 @@
+import type { DesktopUpdateState } from '@/lib/backend/types';
 import type { HealthOptions, HealthStatus } from "@/lib/backend/types";
 import type { ConnectionGroup, ConnectionProfile } from "@/lib/backend/types";
 import type { ServerOverviewSnapshot, SessionReadResult, SessionSubmitResult, SshOpenResult } from "@/lib/backend/types";
@@ -69,3 +70,9 @@ export async function sessionSubmit(_sessionId: string, _command: string, _confi
 export async function sessionClose(_sessionId: string): Promise<void> { return unsupported(); }
 export async function serverOverview(_sessionId: string, _operationId: string): Promise<ServerOverviewSnapshot> { return unsupported(); }
 export async function serverOverviewCancel(_sessionId: string, _operationId: string): Promise<void> { return unsupported(); }
+
+export async function desktopUpdateState(): Promise<DesktopUpdateState> { return {currentVersion: '', status: 'unsupported'}; }
+export function desktopUpdateCheck(_operationId: string) { return desktopUpdateState(); }
+export function desktopUpdateDownload(_operationId: string) { return desktopUpdateState(); }
+export function desktopUpdateCancel(_operationId: string) { return desktopUpdateState(); }
+export function desktopUpdateInstall(_operationId: string) { return desktopUpdateState(); }

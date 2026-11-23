@@ -122,6 +122,91 @@ impl From<GroupDto> for GroupRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn update_install_refuses_webdav_and_connecting_then_releases_admission() {
+        let runtime = DesktopRuntime::from_connection(
+            rusqlite::Connection::open_in_memory().unwrap(),
+            FeatureFlags::default().with_enabled(Feature::Connections),
+        )
+        .unwrap();
+        let webdav = runtime.webdav_gate.lock().await;
+        assert!(
+            matches!(runtime.begin_update_install().await, Err(e) if e.code == "UPDATE_WEBDAV_ACTIVE" && e.count == Some(1))
+        );
+        drop(webdav);
+        let connecting = runtime.state.lock().await.connecting.clone();
+        connecting.lock().unwrap().insert("pending".into(), 2);
+        assert!(
+            matches!(runtime.begin_update_install().await, Err(e) if e.code == "UPDATE_CONNECTION_ACTIVE" && e.count == Some(2))
+        );
+        connecting.lock().unwrap().clear();
+        let session = Arc::new(Session {
+            connection_id: "test".into(),
+            connection_version: 0,
+            channel: None,
+            connection: Box::new(Connection),
+            reader: AsyncMutex::new(Vec::new()),
+            write_unknown: AtomicBool::new(false),
+            exec_output: AsyncMutex::new(VecDeque::new()),
+            inflight: AtomicBool::new(false),
+            file_inflight: AtomicBool::new(true),
+            closed: AtomicBool::new(false),
+            cancel: Cancellation::new(),
+            close_lock: AsyncMutex::new(()),
+            resize_lock: AsyncMutex::new(()),
+            inflight_done: tokio::sync::Notify::new(),
+        });
+        runtime
+            .state
+            .lock()
+            .await
+            .sessions
+            .insert("test".into(), session.clone());
+        assert!(
+            matches!(runtime.begin_update_install().await, Err(e) if e.code == "UPDATE_FILES_ACTIVE" && e.count == Some(1))
+        );
+        session.file_inflight.store(false, Ordering::Release);
+        assert!(
+            matches!(runtime.begin_update_install().await, Err(e) if e.code == "UPDATE_CONNECTION_ACTIVE" && e.count == Some(1))
+        );
+        runtime.close("test").await.unwrap();
+        let guard = runtime.begin_update_install().await.unwrap();
+        assert!(runtime.webdav_gate.try_lock().is_err());
+        let blocked = runtime
+            .open_ssh(
+                "pending".into(),
+                None,
+                None,
+                "open-during-install".into(),
+                None,
+                None,
+            )
+            .await;
+        assert!(matches!(blocked, Err(e) if e == "UPDATE_WORK_ACTIVE"));
+        drop(guard);
+        assert!(runtime.webdav_gate.try_lock().is_ok());
+        let next = runtime
+            .open_ssh(
+                "pending".into(),
+                None,
+                None,
+                "open-after-install-failed".into(),
+                None,
+                None,
+            )
+            .await;
+        assert!(matches!(next, Err(e) if e == "CONNECTION_NOT_FOUND"));
+        runtime.begin_update_install().await.unwrap().commit();
+        let automatic = runtime
+            .webdav_auto_sync(
+                &AtomicBool::new(true),
+                &std::sync::atomic::AtomicU64::new(0),
+                0,
+            )
+            .await;
+        assert!(matches!(automatic, Err(e) if e == "UPDATE_WORK_ACTIVE"));
+    }
+
     #[cfg(any(windows, target_os = "macos"))]
     #[tokio::test]
     async fn webdav_credentials_are_replaced_together_and_used_for_server_check() {
@@ -1307,6 +1392,34 @@ struct OpenOperation {
     session_id: Option<String>,
     started: bool,
 }
+
+#[derive(Debug)]
+pub struct UpdateInstallBlocked {
+    pub code: &'static str,
+    pub count: Option<usize>,
+}
+
+/// Holds admission closed while the desktop host hands off to its installer.
+pub struct UpdateInstallGuard<'a> {
+    installing: &'a AtomicBool,
+    committed: bool,
+    _webdav: tokio::sync::MutexGuard<'a, ()>,
+}
+
+impl UpdateInstallGuard<'_> {
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for UpdateInstallGuard<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.installing.store(false, Ordering::Release);
+        }
+    }
+}
+
 pub struct DesktopRuntime {
     #[cfg(test)]
     store_override: Option<Arc<dyn coshell_platform::secret_store::SecretStore>>,
@@ -1322,6 +1435,7 @@ pub struct DesktopRuntime {
     overview_cancelled: Mutex<HashMap<String, (String, std::time::Instant)>>,
     webdav_previews: Mutex<HashMap<String, WebDavPreviewState>>,
     webdav_gate: AsyncMutex<()>,
+    update_installing: AtomicBool,
     webdav_tests: crate::webdav_test::WebDavTestCoordinator,
     remote_files: crate::remote_files::MutationGate,
     _runtime_lock: Option<std::fs::File>,
@@ -1512,6 +1626,7 @@ impl DesktopRuntime {
         accept_plaintext: bool,
     ) -> Result<(), String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let mut binding = None;
         if interval.is_some() {
             if !accept_plaintext {
@@ -1535,6 +1650,7 @@ impl DesktopRuntime {
         expected_generation: u64,
     ) -> Result<(), String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         if !enabled.load(Ordering::Acquire)
             || generation.load(Ordering::Acquire) != expected_generation
         {
@@ -1635,6 +1751,7 @@ impl DesktopRuntime {
         operation_id: String,
     ) -> Result<WebDavConfigDto, String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let store = self.webdav_store()?;
         let secret = password.map(|s| Secret::new(s.into_bytes()));
         let profile = crate::webdav_config::WebDavProfile {
@@ -1671,6 +1788,7 @@ impl DesktopRuntime {
     pub async fn webdav_config_save_status(&self, operation: &str) -> Result<String, String> {
         use crate::webdav_config::CredentialStatus;
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let path = self.webdav_path()?;
         let store = self.webdav_store()?;
         let flags = Self::webdav_flags();
@@ -1767,6 +1885,7 @@ impl DesktopRuntime {
         self.webdav_tests
             .run(operation_id, |cancel| async move {
                 let _gate = self.webdav_gate.lock().await;
+                self.check_update_admission()?;
                 if cancel.is_cancelled() {
                     return Err(error("连接测试已取消"));
                 }
@@ -1802,6 +1921,7 @@ impl DesktopRuntime {
         operation_id: String,
     ) -> Result<String, String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         self.webdav_sync_inner(passphrase, operation_id).await
     }
     async fn webdav_sync_inner(
@@ -1946,6 +2066,7 @@ impl DesktopRuntime {
         operation_id: String,
     ) -> Result<Option<crate::publication_outbox::PublicationStatus>, String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let path = self
             .webdav_path()?
             .parent()
@@ -1963,6 +2084,7 @@ impl DesktopRuntime {
     }
     pub async fn webdav_reconcile(&self, operation_id: String) -> Result<String, String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let (client, base) = self.webdav_client()?;
         let path = self
             .webdav_path()?
@@ -2013,6 +2135,7 @@ impl DesktopRuntime {
         &self,
     ) -> Result<Vec<crate::publication_outbox::RecentPublication>, String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let path = self
             .webdav_path()?
             .parent()
@@ -2039,6 +2162,7 @@ impl DesktopRuntime {
         cursor: Option<String>,
     ) -> Result<BackupVersionPage, String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let (client, _) = self.webdav_client()?;
         let cancel = coshell_backup::webdav::Cancellation::new();
         let before = client
@@ -2069,6 +2193,7 @@ impl DesktopRuntime {
         cursor: Option<String>,
     ) -> Result<coshell_backup::webdav::SnapshotPage, String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let (client, _) = self.webdav_client()?;
         client
             .list_snapshots(
@@ -2093,6 +2218,7 @@ impl DesktopRuntime {
             .filter(|s| s.len() == 14 && s.bytes().all(|b| b.is_ascii_digit()))
             .ok_or_else(|| error("备份标识无效"))?;
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let passphrase = zeroize::Zeroizing::new(passphrase);
         let (client, base) = self.webdav_client()?;
         let package = client
@@ -2169,6 +2295,7 @@ impl DesktopRuntime {
         version_id: Option<String>,
     ) -> Result<WebDavPreviewDto, String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let passphrase = zeroize::Zeroizing::new(passphrase);
         let (client, base) = self.webdav_client()?;
         let cancel = coshell_backup::webdav::Cancellation::new();
@@ -2249,6 +2376,7 @@ impl DesktopRuntime {
         confirm_groups: bool,
     ) -> Result<(), String> {
         let _gate = self.webdav_gate.lock().await;
+        self.check_update_admission()?;
         let state = self.state.lock().await;
         if !state.sessions.is_empty()
             || !state
@@ -2362,6 +2490,25 @@ impl DesktopRuntime {
             .truncate(false)
             .open(parent.join("desktop-runtime.lock"))
             .map_err(|_| error("无法锁定数据目录"))?;
+        // Tauri may launch the replacement before the old macOS process
+        // releases its instance lock. Wait briefly without taking over its data.
+        #[cfg(target_os = "macos")]
+        {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                match lock.try_lock_exclusive() {
+                    Ok(()) => break,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => return Err(error("CoShell 已在使用此数据目录")),
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         lock.try_lock_exclusive()
             .map_err(|_| error("CoShell 已在使用此数据目录"))?;
         let db = rusqlite::Connection::open(path).map_err(|_| error("无法打开连接数据库"))?;
@@ -2396,11 +2543,68 @@ impl DesktopRuntime {
             overview_cancelled: Mutex::new(HashMap::new()),
             webdav_previews: Mutex::new(HashMap::new()),
             webdav_gate: AsyncMutex::new(()),
+            update_installing: AtomicBool::new(false),
             webdav_tests: crate::webdav_test::WebDavTestCoordinator::default(),
             remote_files: crate::remote_files::MutationGate::default(),
             _runtime_lock: None,
         })
     }
+    pub async fn begin_update_install(
+        &self,
+    ) -> Result<UpdateInstallGuard<'_>, UpdateInstallBlocked> {
+        let unavailable = || UpdateInstallBlocked {
+            code: "UPDATE_WORK_ACTIVE",
+            count: None,
+        };
+        self.check_update_admission().map_err(|_| unavailable())?;
+        // Restore acquires the WebDAV gate before the session state as well.
+        let webdav = self
+            .webdav_gate
+            .try_lock()
+            .map_err(|_| UpdateInstallBlocked {
+                code: "UPDATE_WEBDAV_ACTIVE",
+                count: Some(1),
+            })?;
+        let state = self.state.lock().await;
+        let file_count = state
+            .sessions
+            .values()
+            .filter(|session| session.file_inflight.load(Ordering::Acquire))
+            .count();
+        if file_count > 0 {
+            return Err(UpdateInstallBlocked {
+                code: "UPDATE_FILES_ACTIVE",
+                count: Some(file_count),
+            });
+        }
+        let pending_count: usize = state
+            .connecting
+            .lock()
+            .map_err(|_| unavailable())?
+            .values()
+            .sum();
+        let connection_count = state.sessions.len() + pending_count;
+        if connection_count > 0 {
+            return Err(UpdateInstallBlocked {
+                code: "UPDATE_CONNECTION_ACTIVE",
+                count: Some(connection_count),
+            });
+        }
+        self.update_installing.store(true, Ordering::Release);
+        Ok(UpdateInstallGuard {
+            installing: &self.update_installing,
+            committed: false,
+            _webdav: webdav,
+        })
+    }
+
+    fn check_update_admission(&self) -> Result<(), String> {
+        if self.update_installing.load(Ordering::Acquire) {
+            return Err(error("UPDATE_WORK_ACTIVE"));
+        }
+        Ok(())
+    }
+
     pub async fn list(&self) -> Result<Vec<ConnectionDto>, String> {
         let _state = self.state.lock().await;
         self.service
@@ -2910,6 +3114,7 @@ impl DesktopRuntime {
             }
         };
         let mut state = self.state.lock().await;
+        self.check_update_admission()?;
         if cancellation.is_cancelled() {
             return Err(error("连接已取消"));
         }

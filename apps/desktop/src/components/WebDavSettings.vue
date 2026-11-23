@@ -206,9 +206,9 @@ onMounted(() => { void load().then(() => refreshVersions()); void refreshRecent(
 .webdav-settings__hint { margin: 12px 0 0; }
 .webdav-settings :deep(fieldset) { border: 0; margin: 0; padding: 0; min-width: 0; }
 .webdav-settings > .dialog { width: min(720px, 100%); max-height: none; overflow: visible; border: 1px solid var(--border); box-shadow: none; }
-.webdav-settings button { border: 1px solid var(--border); border-radius: 6px; background: white; padding: 8px 12px; cursor: pointer; }
+.webdav-settings button { border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 8px 12px; cursor: pointer; }
 .webdav-settings button:disabled { cursor: not-allowed; opacity: .55; }
-.webdav-settings button.primary-button { background: var(--accent); color: white; border-color: var(--accent); }
+.webdav-settings button.primary-button { background: var(--accent-button); color: white; border-color: var(--accent-button); }
 .backup-versions { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .backup-versions__header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .backup-versions__header h3 { margin:0; font-size:14px; }

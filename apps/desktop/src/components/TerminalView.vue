@@ -1,9 +1,31 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue';
-import { Terminal } from '@xterm/xterm';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { TerminalRenderQueue } from '@/lib/backend/terminal-render';
+import { resolvedTheme, type ResolvedTheme } from '@/lib/theme';
+
+const palettes: Record<ResolvedTheme, ITheme> = {
+  light: {
+    background: '#ffffff', foreground: '#262626', cursor: '#262626',
+    selectionBackground: '#c8daf5', selectionForeground: '#262626',
+    black: '#303030', red: '#a31e17', green: '#216539', yellow: '#715400',
+    blue: '#1c4ea0', magenta: '#764c83', cyan: '#00656a', white: '#595959',
+    brightBlack: '#626262', brightRed: '#b42318', brightGreen: '#226947',
+    brightYellow: '#785200', brightBlue: '#285bb1', brightMagenta: '#87518e',
+    brightCyan: '#006e78', brightWhite: '#262626',
+  },
+  dark: {
+    background: '#131416', foreground: '#e0e0e4', cursor: '#e0e0e4',
+    selectionBackground: '#354a6c', selectionForeground: '#f5f5f5',
+    black: '#777982', red: '#ff8b82', green: '#7bcf9a', yellow: '#e9c46d',
+    blue: '#95b9ff', magenta: '#d2a8e2', cyan: '#71cdd5', white: '#e0e0e4',
+    brightBlack: '#a1a1a9', brightRed: '#ffa69f', brightGreen: '#a4e1b5',
+    brightYellow: '#f5d691', brightBlue: '#b3caff', brightMagenta: '#e1bdef',
+    brightCyan: '#9ee3e7', brightWhite: '#ffffff',
+  },
+};
 
 const props = withDefaults(defineProps<{ disabled: boolean; active?: boolean }>(), { active: true });
 const emit = defineEmits<{ data: [value: string]; paste: [value: string]; resize: [cols: number, rows: number] }>();
@@ -18,9 +40,19 @@ function activate() { if (!props.active || !terminal || !fit || !container.value
 function eraseLast(grapheme: string) { renderQueue?.eraseLast(grapheme); }
 function ready() { return renderQueue?.idle() ?? Promise.resolve(false); }
 defineExpose({ write, focus, activate, eraseLast, ready });
+watch(resolvedTheme, (theme) => {
+  if (terminal) terminal.options.theme = palettes[theme];
+});
 onMounted(() => {
   if (!container.value) return;
-  terminal = new Terminal({ cursorBlink: true, scrollback: 5000, fontFamily: 'Consolas, monospace', fontSize: 13, theme: { background: '#172a38', foreground: '#e8f3f1' }, allowProposedApi: false });
+  terminal = new Terminal({
+    cursorBlink: true,
+    scrollback: 5000,
+    fontFamily: 'Consolas, monospace',
+    fontSize: 13,
+    theme: palettes[resolvedTheme.value],
+    allowProposedApi: false,
+  });
   renderQueue = new TerminalRenderQueue(terminal);
   // Never let a remote OSC 52 request access the local clipboard.
   terminal.parser.registerOscHandler(52, () => true);

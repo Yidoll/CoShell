@@ -83,17 +83,17 @@ onUnmounted(() => document.removeEventListener('click', outside));
 </template>
 
 <style scoped>
-.session-tabs__bar { display:flex; gap:4px; align-items:center; border-bottom:1px solid #d9e1e6; margin-bottom:12px; overflow-x:auto; }
+.session-tabs__bar { display:flex; gap:4px; align-items:center; border-bottom:1px solid var(--border); margin-bottom:12px; overflow-x:auto; }
 .session-tabs__item { position:relative; flex:none; }
 .session-tabs__item > button { border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent; padding:9px 14px; }
-.session-tabs__item > button[aria-selected="true"] { border-bottom-color:#147d67; background:#fff; }
+.session-tabs__item > button[aria-selected="true"] { border-bottom-color:var(--accent); background:var(--surface); }
 .session-tabs__dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#16855f; margin-right:7px; }
 .session-tabs__dot--offline { background:#9ca8ad; }
 .session-tabs__add { border:0; background:transparent; font-size:18px; }
-.session-tabs__menu { position:fixed; z-index:20; display:flex; flex-direction:column; min-width:120px; padding:4px; border:1px solid #d6dfe4; border-radius:5px; background:white; box-shadow:0 6px 20px #172a3830; }
+.session-tabs__menu { position:fixed; z-index:20; display:flex; flex-direction:column; min-width:120px; padding:4px; border:1px solid var(--border); border-radius:5px; background:var(--surface); box-shadow:0 6px 20px #172a3830; }
 .session-tabs__menu button { text-align:left; border:0; background:transparent; padding:7px 12px; }
-.session-tabs__menu button:hover:not(:disabled) { background:#e7f5f0; }
+.session-tabs__menu button:hover:not(:disabled) { background:var(--selection); }
 .tabs-confirm { position:fixed; inset:0; z-index:100; display:grid; place-items:center; background:#0008; }
-.tabs-confirm section { background:white; padding:24px; border-radius:8px; max-width:400px; }
+.tabs-confirm section { background:var(--surface); padding:24px; border-radius:8px; max-width:400px; }
 .tabs-confirm button { margin-right:10px; }
 </style>

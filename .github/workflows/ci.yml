@@ -25,7 +25,7 @@ jobs:
       - run: pnpm spec:validate
       - run: node --test scripts/check-architecture.mjs
       - run: node --test scripts/storage-docs.test.mjs
-      - run: node --test scripts/tauri-security.test.mjs scripts/tauri-packaging.test.mjs
+      - run: node --test scripts/tauri-security.test.mjs scripts/tauri-packaging.test.mjs scripts/desktop-release.test.mjs
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

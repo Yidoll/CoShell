@@ -1,0 +1,257 @@
+name: Desktop stable release
+
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-stable-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'Yidoll/CoShell'
+    runs-on: ubuntu-latest
+    env:
+      COSHELL_RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test scripts/desktop-release.test.mjs
+      - run: node scripts/desktop-release.mjs version "$COSHELL_RELEASE_TAG"
+
+  build:
+    needs: prepare
+    environment: desktop-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            updater-target: windows-x86_64
+            architecture: x64
+          - os: macos-15-intel
+            rust-target: x86_64-apple-darwin
+            updater-target: darwin-x86_64
+            architecture: x64
+          - os: macos-15
+            rust-target: aarch64-apple-darwin
+            updater-target: darwin-aarch64
+            architecture: aarch64
+    runs-on: ${{ matrix.os }}
+    env:
+      COSHELL_RELEASE_TAG: ${{ github.ref_name }}
+      COSHELL_UPDATER_PUBLIC_KEY: ${{ vars.COSHELL_UPDATER_PUBLIC_KEY }}
+      COSHELL_RUST_TARGET: ${{ matrix.rust-target }}
+      COSHELL_UPDATER_TARGET: ${{ matrix.updater-target }}
+      COSHELL_RELEASE_ARCH: ${{ matrix.architecture }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.rust-target }}
+      - run: pnpm install --frozen-lockfile
+      - name: Build and verify Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          if (!$env:COSHELL_UPDATER_PUBLIC_KEY -or !$env:TAURI_SIGNING_PRIVATE_KEY -or !$env:WINDOWS_CERTIFICATE -or !$env:WINDOWS_TIMESTAMP_URL) {
+            throw 'Missing signing configuration in desktop-release'
+          }
+          $version = node scripts/desktop-release.mjs version $env:COSHELL_RELEASE_TAG
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $pfx = Join-Path $env:RUNNER_TEMP 'coshell-release.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          try {
+            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $cert = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password |
+              Where-Object HasPrivateKey)
+            if ($cert.Count -ne 1) { throw 'Expected a single Windows signing certificate' }
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force
+          }
+          $config = Join-Path $env:RUNNER_TEMP 'coshell-release.json'
+          @{
+            plugins = @{ updater = @{ pubkey = $env:COSHELL_UPDATER_PUBLIC_KEY } }
+            bundle = @{
+              createUpdaterArtifacts = $true
+              windows = @{ certificateThumbprint = $cert[0].Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = $env:WINDOWS_TIMESTAMP_URL; tsp = $true }
+            }
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $config -Encoding utf8
+          pnpm exec tauri build --target $env:COSHELL_RUST_TARGET --bundles nsis --config $config -- --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $output = Join-Path 'target' "$env:COSHELL_RUST_TARGET/release"
+          $binary = Get-Item -LiteralPath (Join-Path $output 'coshell-desktop.exe')
+          $setup = Get-Item -LiteralPath (Join-Path $output "bundle/nsis/CoShell_$($version)_x64-setup.exe")
+          foreach ($file in @($binary, $setup)) {
+            $authenticode = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($authenticode.Status -ne 'Valid' -or $authenticode.SignerCertificate.Thumbprint -ne $cert[0].Thumbprint -or !$authenticode.TimeStamperCertificate) {
+              throw "Invalid Authenticode signature for $($file.Name)"
+            }
+            $info = $file.VersionInfo
+            if ($info.ProductVersion -ne $version -and $info.ProductVersion -ne "$version.0") {
+              throw "Release version differs in $($file.Name)"
+            }
+          }
+          $stream = [IO.File]::OpenRead($binary.FullName)
+          try {
+            $reader = [IO.BinaryReader]::new($stream)
+            $stream.Position = 0x3c
+            $stream.Position = $reader.ReadUInt32()
+            if ($reader.ReadUInt32() -ne 0x00004550 -or $reader.ReadUInt16() -ne 0x8664) {
+              throw 'The installed program must be a Windows x64 PE'
+            }
+          } finally {
+            $stream.Dispose()
+          }
+          node scripts/desktop-release.mjs verify-build $env:COSHELL_RELEASE_TAG $env:COSHELL_UPDATER_TARGET $version x86_64 $setup.VersionInfo.ProductName
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path release-assets | Out-Null
+          Copy-Item -LiteralPath $setup.FullName, "$($setup.FullName).sig" -Destination release-assets
+      - name: Build and verify macOS release
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          : "${COSHELL_UPDATER_PUBLIC_KEY:?}" "${TAURI_SIGNING_PRIVATE_KEY:?}"
+          : "${APPLE_CERTIFICATE:?}" "${APPLE_CERTIFICATE_PASSWORD:?}" "${APPLE_SIGNING_IDENTITY:?}"
+          : "${APPLE_API_ISSUER:?}" "${APPLE_API_KEY:?}" "${APPLE_API_PRIVATE_KEY:?}"
+          version=$(node scripts/desktop-release.mjs version "$COSHELL_RELEASE_TAG")
+          staging=$(mktemp -d)
+          mountpoint="$staging/dmg"
+          mkdir "$mountpoint"
+          mounted=0
+          umask 077
+          export APPLE_API_KEY_PATH="$staging/AuthKey_${APPLE_API_KEY}.p8"
+          cleanup() {
+            if [ "$mounted" = 1 ]; then hdiutil detach "$mountpoint" || true; fi
+            rm -f "$APPLE_API_KEY_PATH"
+          }
+          trap cleanup EXIT
+          printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$APPLE_API_KEY_PATH"
+          unset APPLE_API_PRIVATE_KEY
+          node --input-type=module -e 'console.log(JSON.stringify({ bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: process.env.COSHELL_UPDATER_PUBLIC_KEY } } }))' > "$staging/tauri-release.json"
+          pnpm exec tauri build --target "$COSHELL_RUST_TARGET" --bundles app,dmg \
+            --config "$staging/tauri-release.json" -- --locked
+          output="target/$COSHELL_RUST_TARGET/release/bundle"
+          archive="$output/macos/CoShell.app.tar.gz"
+          dmg="$output/dmg/CoShell_${version}_$COSHELL_RELEASE_ARCH.dmg"
+          check_app() {
+            local app="$1" info="$1/Contents/Info.plist"
+            local bundle_version app_id exe cpu
+            bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info")
+            app_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info")
+            exe=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info")
+            cpu=$(lipo -archs "$app/Contents/MacOS/$exe")
+            node scripts/desktop-release.mjs verify-build "$COSHELL_RELEASE_TAG" "$COSHELL_UPDATER_TARGET" "$bundle_version" "$cpu" "$app_id"
+            codesign --verify --deep --strict "$app"
+            xcrun stapler validate "$app"
+          }
+          mkdir "$staging/update"
+          tar -xzf "$archive" -C "$staging/update"
+          check_app "$staging/update/CoShell.app"
+          codesign --verify --strict "$dmg"
+          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --output-format json |
+            jq -e '.status == "Accepted"' > /dev/null
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "$dmg"
+          mounted=1
+          check_app "$mountpoint/CoShell.app"
+          mkdir release-assets
+          name="CoShell_${version}_$COSHELL_RELEASE_ARCH.app.tar.gz"
+          cp "$archive" "release-assets/$name"
+          cp "$archive.sig" "release-assets/$name.sig"
+          cp "$dmg" release-assets/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-${{ matrix.updater-target }}
+          path: release-assets/
+          if-no-files-found: error
+
+  promote:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: desktop-release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COSHELL_RELEASE_TAG: ${{ github.ref_name }}
+      COSHELL_UPDATER_PUBLIC_KEY: ${{ vars.COSHELL_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-release-*
+          merge-multiple: true
+          path: release-assets
+      - name: Verify and publish the stable release
+        shell: bash
+        run: |
+          notes=docs/release-notes-online-update.md
+          node scripts/desktop-release.mjs version "$COSHELL_RELEASE_TAG"
+          node scripts/desktop-release.mjs manifest "$COSHELL_RELEASE_TAG" release-assets "$notes"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq 'add // []' > "$RUNNER_TEMP/releases.json"
+          draft_id=$(node scripts/desktop-release.mjs select-draft "$COSHELL_RELEASE_TAG" "$RUNNER_TEMP/releases.json")
+          if [ -z "$draft_id" ]; then
+            gh release create "$COSHELL_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "CoShell $COSHELL_RELEASE_TAG" --notes-file "$notes"
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+              jq 'add // []' > "$RUNNER_TEMP/releases.json"
+            draft_id=$(node scripts/desktop-release.mjs select-draft "$COSHELL_RELEASE_TAG" "$RUNNER_TEMP/releases.json")
+            test -n "$draft_id"
+          fi
+          gh release upload "$COSHELL_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber release-assets/*
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$draft_id/assets?per_page=100" |
+            jq 'add // []' > "$RUNNER_TEMP/assets.json"
+          node scripts/desktop-release.mjs verify-uploads "$COSHELL_RELEASE_TAG" release-assets "$RUNNER_TEMP/assets.json"
+          gh release edit "$COSHELL_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false \
+            --latest --notes-file "$notes"

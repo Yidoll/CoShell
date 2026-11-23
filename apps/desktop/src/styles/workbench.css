@@ -1,13 +1,4 @@
 /* Shared desktop workbench chrome: panels own their contents, the shell owns geometry. */
-:root {
-  --chrome: #f5f5f5;
-  --surface: #fff;
-  --foreground: #262626;
-  --border: #e5e5e5;
-  --muted: #737373;
-  --selection: #ededed;
-  --focus: #2563eb;
-}
 html, body, #root { height: 100%; }
 body { overflow: hidden; color: var(--foreground); background: var(--surface); font-size: 12px; }
 button, input, select, textarea { font: inherit; color: inherit; }
@@ -122,13 +113,40 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .webdav-workspace .webdav-settings { padding: 12px; }
 }
 @media (max-height: 540px) { .workbench-center { grid-template-rows: minmax(130px, var(--terminal-ratio)) 5px minmax(85px, var(--file-ratio)); } .workbench-terminal .terminal-screen { min-height: 70px; } }
-@media (prefers-color-scheme: dark) {
-  :root { --chrome: #1b1b1e; --surface: #131416; --foreground: #d7d7db; --border: #38383d; --muted: #97989d; --selection: #2e2f33; --focus: #93b4ff; }
-  .shell, .topbar, .workbench-layout { color: var(--foreground); background: var(--surface); }
-  .workbench-files .file-table th, .workbench-files .file-action-editor { background: var(--chrome); color: var(--foreground); }
-  .workbench-files .file-table tr:hover, .workbench-files .file-table .is-selected { background: var(--selection); }
-  .webdav-workspace .webdav-settings button { background: var(--chrome); color: var(--foreground); }
-  .webdav-workspace .dialog { background: var(--surface); }
+.connections-page > .modal-backdrop { z-index: 200; }
+
+.app-settings {
+  width: min(440px, calc(100% - 32px));
+  border: 1px solid var(--border);
+  color: var(--foreground);
 }
 
-.connections-page > .modal-backdrop { z-index: 200; }
+.app-settings::backdrop { background: rgb(23 32 43 / 55%); }
+
+.app-settings__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.app-settings__header h2 { margin: 0; }
+
+.app-settings button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--surface);
+}
+
+.app-settings__appearance {
+  margin: 0;
+  padding: 8px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.app-settings__appearance .check-label { margin-top: 7px; }
+.app-settings__appearance input { accent-color: var(--accent); }
+.app-settings .primary-button, .app-settings .danger-button { color: white; }

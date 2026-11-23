@@ -15,7 +15,24 @@ export interface HealthOptions {
   signal?: AbortSignal;
 }
 
+export interface DesktopUpdateState {
+  currentVersion: string;
+  status: 'unsupported' | 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'ready' | 'installing' | 'failed';
+  operationId?: string;
+  version?: string;
+  notes?: string;
+  downloadedBytes?: number;
+  totalBytes?: number | null;
+  error?: string;
+  blockingCount?: number;
+}
+
 export interface Backend {
+  desktopUpdateState(): Promise<DesktopUpdateState>;
+  desktopUpdateCheck(operationId: string): Promise<DesktopUpdateState>;
+  desktopUpdateDownload(operationId: string): Promise<DesktopUpdateState>;
+  desktopUpdateCancel(operationId: string): Promise<DesktopUpdateState>;
+  desktopUpdateInstall(operationId: string): Promise<DesktopUpdateState>;
   remoteRealpath(sessionId:string,path:string):Promise<string>;
   remoteList(sessionId:string,path:string):Promise<RemoteFileEntry[]>;
   remoteStat(sessionId:string,path:string):Promise<RemoteFileEntry>;

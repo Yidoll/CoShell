@@ -6,7 +6,6 @@ import { setThemeMode, themeMode, type ThemeMode } from '@/lib/theme';
 import { useSystemStore } from '@/stores/systemStore';
 import ConnectionsPage from '@/components/ConnectionsPage.vue';
 import WebDavSettings from '@/components/WebDavSettings.vue';
-import OnlineUpdate from '@/components/OnlineUpdate.vue';
 
 const system = useSystemStore();
 const runtimeLabel = computed(() => backendRuntime() === 'tauri' ? 'Tauri Desktop' : 'Web / HTTP');
@@ -71,7 +70,6 @@ async function createCommand() {
         </label>
         <p v-if="!themeSaved" role="status">主题无法保存，本次切换仍有效。</p>
       </fieldset>
-      <OnlineUpdate />
     </dialog>
   </div>
 </template>

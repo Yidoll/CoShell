@@ -10,7 +10,6 @@ vi.mock('@/components/ConnectionsPage.vue', () => ({ default: defineComponent({ 
 vi.mock('@/components/WebDavSettings.vue', () => ({ default: defineComponent({ name: 'WebDavSettings', props: ['active'], setup: () => () => h('section', { 'data-test': 'webdav-page' }, 'WebDAV') }) }));
 vi.mock('@/stores/systemStore', () => ({ useSystemStore: () => ({ loading: false, refresh: vi.fn() }) }));
 vi.mock('@/lib/backend/api', () => ({ backendRuntime: () => runtime.value }));
-vi.mock('@/components/OnlineUpdate.vue', () => ({ default: { template: '<section>软件更新</section>' } }));
 
 beforeEach(() => {
   vi.spyOn(HTMLDialogElement.prototype, 'showModal').mockImplementation(function (this: HTMLDialogElement) {
@@ -53,7 +52,7 @@ describe('紧凑顶部操作栏', () => {
     wrapper.unmount();
   });
 
-  it.each(['tauri', 'http'])('在 %s 设置中选择主题，同时保留当前工作区', async (value) => {
+  it.each(['tauri', 'http'])('在 %s 设置中选择主题，且不提供应用内更新', async (value) => {
     runtime.value = value;
     const stopTheme = initializeTheme();
     const wrapper = mount(App, { attachTo: document.body });
@@ -67,7 +66,7 @@ describe('紧凑顶部操作栏', () => {
     expect(localStorage.getItem('coshell.theme')).toBe('dark');
     await wrapper.get<HTMLInputElement>('input[value=light]').setValue(true);
     expect(document.documentElement.dataset.theme).toBe('light');
-    expect(wrapper.text()).toContain('软件更新');
+    expect(wrapper.get('dialog[aria-label="设置"]').text()).not.toContain('软件更新');
 
     await wrapper.get('[data-test=close-settings]').trigger('click');
     expect(document.activeElement).toBe(opener.element);

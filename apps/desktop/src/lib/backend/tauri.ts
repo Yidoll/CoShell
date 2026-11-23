@@ -1,4 +1,3 @@
-import type { DesktopUpdateState } from '@/lib/backend/types';
 import type { ConnectionGroup, ConnectionProfile, HealthOptions, HealthStatus, ServerOverviewSnapshot, SessionReadResult, SessionSubmitResult, SshOpenResult } from "@/lib/backend/types";
 import { decodeVersionPage } from './webdav-versions';
 import { decodeSnapshotPage } from './webdav-snapshots';
@@ -74,9 +73,3 @@ export function sessionSubmit(sessionId: string, command: string, confirmToken?:
 export function sessionClose(sessionId: string) { return invokeCommand<void>("session_close", { sessionId }); }
 export function serverOverview(sessionId: string, operationId: string) { return invokeCommand<ServerOverviewSnapshot>("server_overview", { sessionId, operationId }); }
 export function serverOverviewCancel(sessionId: string, operationId: string) { return invokeCommand<void>("server_overview_cancel", { sessionId, operationId }); }
-
-export function desktopUpdateState() { return invokeCommand<DesktopUpdateState>('desktop_update_state'); }
-export function desktopUpdateCheck(operationId: string) { return invokeCommand<DesktopUpdateState>('desktop_update_check', {operationId}); }
-export function desktopUpdateDownload(operationId: string) { return invokeCommand<DesktopUpdateState>('desktop_update_download', {operationId}); }
-export function desktopUpdateCancel(operationId: string) { return invokeCommand<DesktopUpdateState>('desktop_update_cancel', {operationId}); }
-export function desktopUpdateInstall(operationId: string) { return invokeCommand<DesktopUpdateState>('desktop_update_install', {operationId}); }

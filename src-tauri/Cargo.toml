@@ -17,12 +17,3 @@ coshell-core = { path = "../crates/coshell-core" }
 coshell-types = { path = "../crates/coshell-types" }
 tauri.workspace = true
 tokio.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-semver = "1"
-
-[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-tauri-plugin-updater = { version = "=2.12.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
-
-[dev-dependencies]
-tauri = { workspace = true, features = ["test"] }

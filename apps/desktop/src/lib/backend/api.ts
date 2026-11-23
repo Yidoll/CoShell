@@ -75,9 +75,3 @@ export function resetBackendForTests(): void {
 }
 
 export type { HealthStatus } from "@/lib/backend/types";
-
-export async function desktopUpdateState() { return (await resolveBackend()).desktopUpdateState(); }
-export async function desktopUpdateCheck(operationId: string) { return (await resolveBackend()).desktopUpdateCheck(operationId); }
-export async function desktopUpdateDownload(operationId: string) { return (await resolveBackend()).desktopUpdateDownload(operationId); }
-export async function desktopUpdateCancel(operationId: string) { return (await resolveBackend()).desktopUpdateCancel(operationId); }
-export async function desktopUpdateInstall(operationId: string) { return (await resolveBackend()).desktopUpdateInstall(operationId); }

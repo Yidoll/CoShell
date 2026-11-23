@@ -6,8 +6,6 @@ use coshell_core::RuntimeService;
 use coshell_types::HealthReport;
 use tauri::Manager;
 
-mod desktop_update;
-
 #[tauri::command]
 async fn remote_list(
     runtime: tauri::State<'_, DesktopRuntime>,
@@ -491,19 +489,13 @@ async fn server_overview_cancel(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default();
-    #[cfg(any(windows, target_os = "macos"))]
-    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
-    builder
+    tauri::Builder::default()
         .setup(|app| {
             let runtime = DesktopRuntime::open_default().map_err(std::io::Error::other)?;
             let interval = runtime
                 .webdav_auto_interval()
                 .map_err(std::io::Error::other)?;
             app.manage(runtime);
-            app.manage(desktop_update::DesktopUpdate::new(
-                app.package_info().version.to_string(),
-            ));
             let app_handle = app.handle().clone();
             let enabled =
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(interval.is_some()));
@@ -534,11 +526,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            desktop_update::desktop_update_state,
-            desktop_update::desktop_update_check,
-            desktop_update::desktop_update_download,
-            desktop_update::desktop_update_cancel,
-            desktop_update::desktop_update_install,
             health,
             saved_command_list,
             saved_command_save,

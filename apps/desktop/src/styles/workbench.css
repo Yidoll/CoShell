@@ -149,4 +149,3 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .app-settings__appearance .check-label { margin-top: 7px; }
 .app-settings__appearance input { accent-color: var(--accent); }
-.app-settings .primary-button, .app-settings .danger-button { color: white; }
